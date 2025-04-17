@@ -1,0 +1,18 @@
+# Render.yaml configuration for deployment
+
+services:
+  # A web service
+  - type: web
+    name: noi-data-extraction-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false # This will be set manually in the Render dashboard
+      - key: API_KEY
+        sync: false # This will be set manually in the Render dashboard
+      - key: PYTHON_VERSION
+        value: 3.10.0
+    healthCheckPath: /health
+    autoDeploy: true
