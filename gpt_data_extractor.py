@@ -76,15 +76,63 @@ class GPTDataExtractor:
             text = str(text)
         text_sample = text[:self.sample_limit]
 
-        # (document-specific prompt context omitted here for brevity, reuse existing)
-        # [Use existing context creation from your original code]
+        period_context = f" for the period {period}" if period else ""
 
-        # Reuse original base prompt construction...
-        # Final prompt string stored in variable: `base_prompt`
+        base_prompt = f"""I need to extract specific financial data from this {document_type}{period_context}.
 
-        # For brevity, the long prompt string is unchanged from the original version
-        # Paste it as-is below or modularize it into a template file if needed
-        return base_prompt  # Keep unchanged content
+This document may include sections labeled Income, Revenue, Expenses, or Operating Expenses.
+Focus on extracting these key financial metrics:
+
+1. REVENUE ITEMS:
+   - Rental Income
+   - Laundry/Vending Income
+   - Parking Income
+   - Other Revenue
+   - Total Revenue
+
+2. EXPENSE ITEMS:
+   - Repairs & Maintenance
+   - Utilities
+   - Property Management Fees
+   - Property Taxes
+   - Insurance
+   - Admin/Office Costs
+   - Marketing/Advertising
+   - Total Expenses
+
+3. NET OPERATING INCOME (NOI):
+   - Net Operating Income (Total Revenue - Total Expenses)
+
+Here's the financial document:
+{text_sample}
+
+Extract the financial data and provide it in JSON format with the following structure:
+{{
+  "document_type": "{document_type}",
+  "period": "{period or 'Unknown'}",
+  "rental_income": [number],
+  "laundry_income": [number],
+  "parking_income": [number],
+  "other_revenue": [number],
+  "total_revenue": [number],
+  "repairs_maintenance": [number],
+  "utilities": [number],
+  "property_management_fees": [number],
+  "property_taxes": [number],
+  "insurance": [number],
+  "admin_office_costs": [number],
+  "marketing_advertising": [number],
+  "total_expenses": [number],
+  "net_operating_income": [number]
+}}
+
+IMPORTANT:
+- All values must be numbers
+- Totals must equal the sum of line items
+- Do not include any explanation or comments
+"""
+
+        return base_prompt
 
     def _extract_with_gpt(self, prompt: str) -> Dict[str, Any]:
         try:
