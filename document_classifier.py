@@ -9,7 +9,7 @@ import logging
 import json
 import re
 from typing import Dict, Any, List, Tuple, Optional, Union
-import openai
+from openai import OpenAI
 
 # Configure logging
 logging.basicConfig(
@@ -33,12 +33,15 @@ class DocumentClassifier:
         """
         # Set API key if provided, otherwise use environment variable
         if api_key:
-            openai.api_key = api_key
+            self.api_key = api_key
         else:
-            openai.api_key = os.environ.get("OPENAI_API_KEY")
+            self.api_key = os.environ.get("OPENAI_API_KEY")
             
-        if not openai.api_key:
+        if not self.api_key:
             logger.warning("OpenAI API key not set. Please set OPENAI_API_KEY environment variable or provide it during initialization.")
+        
+        # Initialize OpenAI client
+        self.client = OpenAI(api_key=self.api_key)
         
         # Document types we can classify
         self.document_types = [
@@ -385,8 +388,8 @@ Respond in JSON format with document_type and period fields.
 """
         
         try:
-            # Call OpenAI API
-            response = openai.ChatCompletion.create(
+            # Call OpenAI API with updated client format
+            response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
                     {"role": "system", "content": "You are a senior real estate accountant specializing in financial document classification."},
@@ -399,83 +402,56 @@ Respond in JSON format with document_type and period fields.
             # Extract response text
             response_text = response.choices[0].message.content.strip()
             
-            # Try to parse JSON response
+            # Parse JSON response
             try:
                 result = json.loads(response_text)
-                # Ensure required fields are present
-                if 'document_type' not in result:
-                    result['document_type'] = 'Unknown'
-                if 'period' not in result:
-                    result['period'] = None
+                logger.info("Successfully parsed JSON response")
                 return result
-            except json.JSONDecodeError:
-                # If JSON parsing fails, extract information using regex
-                document_type = 'Unknown'
-                period = None
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing JSON response: {str(e)}")
+                logger.error(f"Response text: {response_text}")
                 
-                # Check for document type
-                for doc_type in self.document_types:
-                    if doc_type in response_text:
-                        document_type = doc_type
-                        break
+                # Try to extract JSON from response text
+                json_match = re.search(r'({.*})', response_text.replace('\n', ''), re.DOTALL)
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group(1))
+                        logger.info("Successfully extracted and parsed JSON from response")
+                        return result
+                    except json.JSONDecodeError:
+                        logger.error("Error parsing extracted JSON")
                 
-                # Extract period using regex patterns
-                month_year_pattern = r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[,\s]+\d{4}'
-                quarter_pattern = r'(?:Q[1-4]|(?:First|Second|Third|Fourth)\s+Quarter)[,\s]+\d{4}'
-                year_pattern = r'(?:FY\s+)?\d{4}'
-                
-                month_year_match = re.search(month_year_pattern, response_text, re.IGNORECASE)
-                if month_year_match:
-                    period = month_year_match.group(0).strip()
-                else:
-                    quarter_match = re.search(quarter_pattern, response_text, re.IGNORECASE)
-                    if quarter_match:
-                        period = quarter_match.group(0).strip()
-                    else:
-                        year_match = re.search(year_pattern, response_text)
-                        if year_match:
-                            period = year_match.group(0).strip()
-                
+                # Return default result if JSON parsing fails
                 return {
-                    'document_type': document_type,
-                    'period': period
+                    'document_type': 'Unknown',
+                    'period': None
                 }
-            
+                
         except Exception as e:
             logger.error(f"Error calling OpenAI API: {str(e)}")
-            # Fallback to Unknown if API call fails
+            # Return default result if API call fails
             return {
                 'document_type': 'Unknown',
                 'period': None
             }
 
+# Create an instance of the classifier for direct import
+classifier = DocumentClassifier()
 
-def classify_document(text_or_data: Union[str, Dict[str, Any]], known_document_type: Optional[str] = None, api_key: Optional[str] = None) -> Tuple[str, Optional[str]]:
+# Functions for backward compatibility
+def classify_document(text_or_data: Union[str, Dict[str, Any]], known_document_type: Optional[str] = None) -> Tuple[str, Optional[str]]:
     """
-    Convenience function to classify a document, with option to use known document type
+    Classify document type and extract time period
     
     Args:
         text_or_data: Preprocessed text from the document or data dictionary
         known_document_type: Known document type from labeled upload (optional)
-        api_key: OpenAI API key (optional)
         
     Returns:
         Tuple of (document_type, period)
     """
-    classifier = DocumentClassifier(api_key)
-    
-    try:
-        # Log input type for debugging
-        logger.info(f"classify_document input type: {type(text_or_data)}")
-        
-        result = classifier.classify(text_or_data, known_document_type)
-        return result['document_type'], result['period']
-    except Exception as e:
-        logger.error(f"Error in classify_document: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return "Unknown", None
-
+    result = classifier.classify(text_or_data, known_document_type)
+    return result['document_type'], result['period']
 
 def map_noi_tool_to_extraction_type(noi_tool_type: str) -> str:
     """
@@ -485,61 +461,10 @@ def map_noi_tool_to_extraction_type(noi_tool_type: str) -> str:
         noi_tool_type: Document type from NOI Tool
         
     Returns:
-        Corresponding document type for extraction tool
+        Mapped document type for extraction tool
     """
-    mapping = {
-        "current_month_actuals": "Actual Income Statement",
-        "prior_month_actuals": "Actual Income Statement",
-        "current_month_budget": "Budget",
-        "prior_year_actuals": "Prior Year Actual"
-    }
-    
-    return mapping.get(noi_tool_type, "Unknown")
-
-
-def map_extraction_to_noi_tool_type(extraction_type: str) -> str:
-    """
-    Map extraction tool document type to NOI Tool document type
-    
-    Args:
-        extraction_type: Document type from extraction tool
-        
-    Returns:
-        Corresponding document type for NOI Tool
-    """
-    # This is a simplified mapping that assumes the first match
-    # In a real scenario, additional context might be needed to distinguish
-    # between current_month_actuals and prior_month_actuals
-    mapping = {
-        "Actual Income Statement": "current_month_actuals",
-        "Budget": "current_month_budget",
-        "Prior Year Actual": "prior_year_actuals"
-    }
-    
-    return mapping.get(extraction_type, "unknown")
-
-
-if __name__ == "__main__":
-    # Example usage
-    import sys
-    
-    if len(sys.argv) < 2:
-        print("Usage: python document_classifier.py <text_file> [known_document_type]")
-        sys.exit(1)
-    
-    file_path = sys.argv[1]
-    known_document_type = sys.argv[2] if len(sys.argv) > 2 else None
-    
-    try:
-        with open(file_path, 'r') as f:
-            text = f.read()
-        
-        doc_type, period = classify_document(text, known_document_type)
-        result = {
-            "document_type": doc_type,
-            "period": period
-        }
-        print(json.dumps(result, indent=2))
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        sys.exit(1)
+    if noi_tool_type in classifier.document_type_mapping:
+        return classifier.document_type_mapping[noi_tool_type]
+    else:
+        logger.warning(f"Unknown document type mapping for '{noi_tool_type}', using 'Unknown'")
+        return "Unknown"
