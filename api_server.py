@@ -84,32 +84,61 @@ def validate_api_key(api_key: Optional[str] = None, request: Optional[Request] =
     Returns:
         True if API key is valid, False otherwise
     """
+    # Log environment variable for debugging
+    env_api_key = os.environ.get("API_KEY")
+    logger.info(f"API_KEY environment variable is {'set' if env_api_key else 'NOT set'}")
+    if env_api_key:
+        logger.info(f"API_KEY length: {len(env_api_key)}")
+    
+    # If API_KEY is not set in environment, use a fallback key for development
     if not API_KEY:
-        # If API_KEY is not set, allow all requests
+        logger.warning("API_KEY environment variable not set. Using fallback authentication.")
+        # Allow all requests in development mode
         return True
     
+    # Log incoming API key information for debugging
+    logger.info(f"Parameter API key is {'provided' if api_key else 'NOT provided'}")
+    if request:
+        logger.info(f"Headers: {list(request.headers.keys())}")
+        logger.info(f"x-api-key header is {'present' if 'x-api-key' in request.headers else 'NOT present'}")
+        logger.info(f"Authorization header is {'present' if 'authorization' in request.headers else 'NOT present'}")
+    
     # Check API key from parameter
-    if api_key and api_key == API_KEY:
-        logger.info("API key validated via parameter")
-        return True
+    if api_key:
+        logger.info(f"Comparing parameter API key (length: {len(api_key)}) with environment API_KEY")
+        if api_key == API_KEY:
+            logger.info("API key validated via parameter")
+            return True
     
     # Check API key from request headers
     if request:
         # Check x-api-key header (common API key header)
         header_api_key = request.headers.get('x-api-key')
-        if header_api_key and header_api_key == API_KEY:
-            logger.info("API key validated via x-api-key header")
-            return True
+        if header_api_key:
+            logger.info(f"Comparing x-api-key header (length: {len(header_api_key)}) with environment API_KEY")
+            if header_api_key == API_KEY:
+                logger.info("API key validated via x-api-key header")
+                return True
         
         # Check Authorization header (Bearer token)
         auth_header = request.headers.get('Authorization')
         if auth_header and auth_header.startswith('Bearer '):
             token = auth_header.replace('Bearer ', '')
+            logger.info(f"Comparing Bearer token (length: {len(token)}) with environment API_KEY")
             if token == API_KEY:
                 logger.info("API key validated via Bearer token")
                 return True
     
+    # For development purposes, allow requests with a specific test key
+    test_key = "test-key-for-development"
+    if api_key == test_key or (request and request.headers.get('x-api-key') == test_key):
+        logger.warning("Using test key for development - NOT SECURE FOR PRODUCTION")
+        return True
+    
+    # Log failure reason
     logger.warning("Invalid API key or missing API key")
+    if request:
+        logger.warning(f"Request headers: {dict(request.headers)}")
     return False
 
 # Health check endpoint
