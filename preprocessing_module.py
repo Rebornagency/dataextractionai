@@ -312,18 +312,33 @@ class FilePreprocessor:
         return False
 
 
-def preprocess_file(file_path: str) -> Dict[str, Any]:
+def preprocess_file(file_path: str, content_type: str = None, filename: str = None) -> Dict[str, Any]:
     """
     Convenience function to preprocess a file
     
     Args:
         file_path: Path to the file to preprocess
+        content_type: Content type of the file (optional)
+        filename: Original filename (optional)
         
     Returns:
         Dict containing extracted text/data and metadata
     """
     preprocessor = FilePreprocessor()
-    return preprocessor.preprocess(file_path)
+    result = preprocessor.preprocess(file_path)
+    
+    # Add additional metadata if provided
+    if content_type or filename:
+        if 'metadata' not in result:
+            result['metadata'] = {}
+        
+        if content_type:
+            result['metadata']['content_type'] = content_type
+        
+        if filename:
+            result['metadata']['original_filename'] = filename
+    
+    return result
 
 
 if __name__ == "__main__":
