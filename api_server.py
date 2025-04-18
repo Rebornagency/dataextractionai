@@ -135,8 +135,14 @@ def validate_api_key(api_key: Optional[str] = None, request: Optional[Request] =
         logger.warning("Using test key for development - NOT SECURE FOR PRODUCTION")
         return True
     
-    # Log failure reason
-    logger.warning("Invalid API key or missing API key")
+    # Log failure reason with more specific details
+    if not API_KEY:
+        logger.warning("API_KEY environment variable is not set in the server")
+    elif not api_key and not (request and (request.headers.get('x-api-key') or request.headers.get('Authorization'))):
+        logger.warning("No API key provided in request (parameter, x-api-key header, or Authorization header)")
+    else:
+        logger.warning("API key provided but does not match the expected value")
+    
     if request:
         logger.warning(f"Request headers: {dict(request.headers)}")
     return False
@@ -147,8 +153,10 @@ async def health_check(request: Request):
     """
     Health check endpoint
     """
-    if not validate_api_key(request=request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    # Skip API key validation if this is a Render health check
+    if "render-health-check" not in request.headers:
+        if not validate_api_key(request=request):
+            raise HTTPException(status_code=401, detail="Unauthorized")
     
     return {"status": "healthy", "version": "2.0.0"}
 
