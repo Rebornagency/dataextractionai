@@ -33,12 +33,14 @@ class FilePreprocessor:
             'txt': self._process_txt
         }
     
-    def preprocess(self, file_path: str) -> Dict[str, Any]:
+    def preprocess(self, file_path: str, content_type: str = None, filename: str = None) -> Dict[str, Any]:
         """
         Main method to preprocess a file
         
         Args:
             file_path: Path to the file to preprocess
+            content_type: Content type of the file (optional)
+            filename: Original filename (optional)
             
         Returns:
             Dict containing extracted text/data and metadata
@@ -46,12 +48,48 @@ class FilePreprocessor:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         
-        # Get file extension and check if supported
-        _, ext = os.path.splitext(file_path)
+        # Get file extension from filename if provided, otherwise from file_path
+        if filename and '.' in filename:
+            _, ext = os.path.splitext(filename)
+        else:
+            _, ext = os.path.splitext(file_path)
+        
         ext = ext.lower().lstrip('.')
         
+        # Determine file type from content_type if provided
+        detected_type = None
+        if content_type:
+            # Map content types to extensions
+            content_type_map = {
+                'application/pdf': 'pdf',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+                'application/vnd.ms-excel': 'xls',
+                'text/csv': 'csv',
+                'text/plain': 'txt'
+            }
+            
+            # Check if content_type is in our map
+            for ct, extension in content_type_map.items():
+                if ct in content_type:
+                    detected_type = extension
+                    break
+        
+        # Use detected type if available, otherwise use extension
+        if detected_type:
+            ext = detected_type
+            logger.info(f"Using file type from content_type: {ext}")
+        
+        # Check if file type is supported
         if ext not in self.supported_extensions:
-            raise ValueError(f"Unsupported file type: {ext}")
+            # Fallback to Excel processor for spreadsheet content types
+            if content_type and ('spreadsheet' in content_type or 'excel' in content_type.lower()):
+                logger.info(f"Unsupported extension {ext} but content type {content_type} indicates Excel, using Excel processor")
+                processor = self._process_excel
+            else:
+                raise ValueError(f"Unsupported file type: {ext}")
+        else:
+            # Process the file based on its extension
+            processor = self.supported_extensions[ext]
         
         # Get file type using magic
         file_type = magic.from_file(file_path, mime=True)
@@ -59,17 +97,17 @@ class FilePreprocessor:
         
         logger.info(f"Processing file: {file_path} ({file_type}, {file_size} bytes)")
         
-        # Process the file based on its extension
-        processor = self.supported_extensions[ext]
+        # Extract content
         extracted_content = processor(file_path)
         
         # Add metadata
         result = {
             'metadata': {
-                'filename': os.path.basename(file_path),
+                'filename': filename or os.path.basename(file_path),
                 'file_type': file_type,
                 'file_size': file_size,
-                'extension': ext
+                'extension': ext,
+                'content_type': content_type
             },
             'content': extracted_content
         }
@@ -325,20 +363,7 @@ def preprocess_file(file_path: str, content_type: str = None, filename: str = No
         Dict containing extracted text/data and metadata
     """
     preprocessor = FilePreprocessor()
-    result = preprocessor.preprocess(file_path)
-    
-    # Add additional metadata if provided
-    if content_type or filename:
-        if 'metadata' not in result:
-            result['metadata'] = {}
-        
-        if content_type:
-            result['metadata']['content_type'] = content_type
-        
-        if filename:
-            result['metadata']['original_filename'] = filename
-    
-    return result
+    return preprocessor.preprocess(file_path, content_type, filename)
 
 
 if __name__ == "__main__":
