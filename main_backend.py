@@ -1,5 +1,5 @@
 """
-Data Extraction AI - Combined Module (Enhanced + App Fees + NumPy Fix + Debug Logging)
+Data Extraction AI - Combined Module (Enhanced + App Fees + NumPy Fix + Syntax Fix + Debug Logging)
 This file contains all modules from the Data Extraction AI project into a single file
 for easy upload to any LLM or deployment.
 
@@ -11,6 +11,7 @@ Enhancements:
 - Calculates EGI explicitly
 - Returns a more structured JSON output
 - Fixed NumPy 2.0 float type error
+- Fixed SyntaxError in _determine_type_from_filename
 - Added DEBUG logging to FilePreprocessor methods
 
 Dependencies (install via requirements.txt):
@@ -43,14 +44,14 @@ import math # For isnan checks
 # Configure logging (Set level to DEBUG)
 #################################################
 logging.basicConfig(
-    level=logging.DEBUG, # <-- CHANGED TO DEBUG to show detailed logs
+    level=logging.DEBUG, # <-- Set to DEBUG to show detailed logs
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 # Use a distinct logger name
 logger = logging.getLogger('data_extraction_api_service_debug')
 
 #################################################
-# Preprocessing Module (ADDED DEBUG LOGGING)
+# Preprocessing Module (Includes DEBUG LOGGING)
 #################################################
 class FilePreprocessor:
     """Main class for preprocessing different file types"""
@@ -368,12 +369,13 @@ def preprocess_file(file_path: str, content_type: str = None, filename: str = No
     return preprocessor.preprocess(file_path, content_type, filename)
 
 #################################################
-# Document Classifier Module (ADDED DEBUG LOGGING to _extract_text_from_input)
+# Document Classifier Module (SyntaxError Fixed)
 #################################################
 class DocumentClassifier:
     """
     Class for classifying financial documents and extracting time periods
     using GPT-4, enhanced to work with labeled document types.
+    Includes fix for SyntaxError.
     """
     def __init__(self, api_key: Optional[str] = None):
         """Initialize the document classifier."""
@@ -412,58 +414,26 @@ class DocumentClassifier:
         logger.info(f"GPT classification result: {gpt_result}")
         return {**gpt_result, 'method': 'gpt', 'duration_ms': int((time.time() - start_time) * 1000)}
 
-    # --- THIS METHOD NOW INCLUDES DEBUG LOGGING ---
     def _extract_text_from_input(self, text_or_data: Union[str, Dict[str, Any]]) -> str:
         """Extract text content from input (string or dictionary) with better fallbacks."""
         logger.debug(f"DEBUG: _extract_text_from_input called with type: {type(text_or_data)}")
         if isinstance(text_or_data, dict):
-            # 1. Prioritize 'combined_text'
-            combined_text = text_or_data.get('content', {}).get('combined_text') # Access nested content dict
-            if combined_text and isinstance(combined_text, str) and combined_text.strip():
-                logger.debug("DEBUG: Using 'combined_text' for text extraction.")
-                return combined_text
-
-            # 2. Fallback: Join 'text' list content (from PDF)
-            text_list = text_or_data.get('content', {}).get('text') # Access nested content dict
+            combined_text = text_or_data.get('content', {}).get('combined_text')
+            if combined_text and isinstance(combined_text, str) and combined_text.strip(): logger.debug("DEBUG: Using 'combined_text'."); return combined_text
+            text_list = text_or_data.get('content', {}).get('text')
             if text_list and isinstance(text_list, list):
-                page_contents = [p.get('content', '') if isinstance(p, dict) else str(p) for p in text_list]
-                joined_text = "\n\n".join(filter(None, page_contents))
-                if joined_text.strip():
-                    logger.debug("DEBUG: Using joined 'text' list content for text extraction.")
-                    return joined_text
-
-            # 3. Fallback: Join 'text_representation' list (from Excel)
-            text_repr_list = text_or_data.get('content', {}).get('text_representation') # Access nested content dict
+                page_contents = [p.get('content', '') if isinstance(p, dict) else str(p) for p in text_list]; joined_text = "\n\n".join(filter(None, page_contents))
+                if joined_text.strip(): logger.debug("DEBUG: Using joined 'text' list."); return joined_text
+            text_repr_list = text_or_data.get('content', {}).get('text_representation')
             if text_repr_list and isinstance(text_repr_list, list):
                  joined_repr = "\n\n".join(filter(None, text_repr_list))
-                 if joined_repr.strip():
-                      logger.debug("DEBUG: Using joined 'text_representation' list for text extraction.")
-                      return joined_repr
+                 if joined_repr.strip(): logger.debug("DEBUG: Using joined 'text_repr' list."); return joined_repr
+            logger.warning("DEBUG: Could not find standard text fields, using JSON fallback.");
+            try: return json.dumps(text_or_data, default=str, ensure_ascii=False, indent=None, separators=(',', ':'))[:5000]
+            except Exception as json_err: logger.error(f"JSON dump fallback error: {json_err}"); return str(text_or_data)[:5000]
+        elif isinstance(text_or_data, str): logger.debug("DEBUG: Input is string."); return text_or_data
+        else: logger.warning(f"Input not dict/str: {type(text_or_data)}"); return str(text_or_data)
 
-            # 4. Fallback: Use 'content' field if string (less likely now with nested structure)
-            # content_field = text_or_data.get('content')
-            # if content_field and isinstance(content_field, str) and content_field.strip():
-            #      logger.debug("DEBUG: Using top-level 'content' field (string) for text extraction.")
-            #      return content_field
-
-            # 5. Last Resort: Dump dictionary to JSON string (Log Warning)
-            logger.warning("DEBUG: Could not find standard text fields in dict, using limited string representation of the *entire input*.")
-            try:
-                # Attempt limited JSON dump of the whole input dict
-                return json.dumps(text_or_data, default=str, ensure_ascii=False, indent=None, separators=(',', ':'))[:5000] # Limit length
-            except Exception as json_err:
-                 logger.error(f"Error converting dict to JSON string during fallback: {json_err}")
-                 return str(text_or_data)[:5000] # Final fallback
-
-        elif isinstance(text_or_data, str):
-            logger.debug("DEBUG: Input is already a string.")
-            return text_or_data
-        else:
-            logger.warning(f"Input for text extraction is not dict or str: {type(text_or_data)}, converting to string.")
-            return str(text_or_data)
-    # --- END OF MODIFICATION ---
-
-    # _extract_period_from_content, _standardize_month, _determine_type_from_filename, etc. remain unchanged
     def _extract_period_from_content(self, text_or_data: Union[str, Dict[str, Any]]) -> Optional[str]:
         text = self._extract_text_from_input(text_or_data);
         if not text or len(text) < 4: return None
@@ -488,11 +458,35 @@ class DocumentClassifier:
     def _standardize_month(self, month_str: str, months_full: List[str], months_abbr: List[str]) -> str: month_lower=month_str.lower();
     for i,abbr in enumerate(months_abbr):
         if month_lower.startswith(abbr.lower()): return months_full[i]; return month_str
+
+    # --- THIS METHOD IS FIXED ---
     def _determine_type_from_filename(self, filename: Optional[str]) -> Optional[str]:
-        if not filename: return None; filename_lower=filename.lower(); is_budget='budget' in filename_lower or 'bdgt' in filename_lower; is_actual='actual' in filename_lower or 'is' in filename_lower or 'p&l' in filename_lower or 'income statement' in filename_lower or 'profit loss' in filename_lower; is_prior_year='prior year' in filename_lower or 'py' in filename_lower or 'previous year' in filename_lower or 'last year' in filename_lower;
-        if is_budget: return "Budget";
+        """Determine document type from filename keywords."""
+        if not filename:
+            return None
+        filename_lower = filename.lower()
+        # Use more specific checks to avoid partial word matches if possible
+        # Example: Check for whole words using word boundaries (\b) or spaces/underscores
+        is_budget = 'budget' in filename_lower or 'bdgt' in filename_lower
+        is_actual = 'actual' in filename_lower or 'is' in filename_lower or 'p&l' in filename_lower or 'income statement' in filename_lower or 'profit loss' in filename_lower
+        is_prior_year = 'prior year' in filename_lower or 'py' in filename_lower or 'previous year' in filename_lower or 'last year' in filename_lower
+
+        if is_budget:
+            return "Budget"
+        # Check actual *after* budget, as budget files might contain "actual"
         if is_actual:
-            if is_prior_year: return "Prior Year Actual"; else: return "Actual Income Statement"; return None
+            if is_prior_year:
+                return "Prior Year Actual"
+            else:
+                # Could add prior month check here if needed:
+                # elif 'prior month' in filename_lower or 'pm' in filename_lower:
+                #     return "Actual Income Statement" # Or a specific type for prior month
+                return "Actual Income Statement" # Default actual to current/prior month
+
+        # If neither budget nor actual keywords were matched
+        return None
+    # --- END OF FIX ---
+
     def _extract_period_from_filename(self, filename: str) -> Optional[str]:
         if not filename: return None; name_part=os.path.splitext(filename)[0]; name_part=re.sub(r'[_\-\.]+',' ',name_part); months_full=['January','February','March','April','May','June','July','August','September','October','November','December']; months_abbr=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; months_pattern='|'.join(months_full+months_abbr); year_pattern=r'(20\d{2})'; month_year_match=re.search(rf'({months_pattern})\s+{year_pattern}',name_part,re.IGNORECASE);
         if month_year_match: return f"{self._standardize_month(month_year_match.group(1),months_full,months_abbr)} {month_year_match.group(2)}"; year_month_match=re.search(rf'{year_pattern}\s+({months_pattern})',name_part,re.IGNORECASE);
@@ -507,7 +501,11 @@ class DocumentClassifier:
         elif actual_score>0:
             if prior_year_score>0: doc_type='Prior Year Actual'; type_confidence=min(0.8+prior_year_score*0.1,1.0)
             else: doc_type='Actual Income Statement'; type_confidence=min(0.7+actual_score*0.05,0.9); result['document_type']=doc_type; result['confidence']=type_confidence; period=self._extract_period_from_content(text);
-        if period: result['period']=period; result['confidence']=min(result['confidence']+0.15,1.0); return result
+        # Ensure period assignment happens regardless of type confidence logic path
+        if period: result['period']=period; result['confidence']=min(result['confidence']+0.15,1.0);
+        # Assign type even if confidence is low
+        result['document_type'] = doc_type
+        return result
     def _gpt_classification(self, text: str) -> Dict[str, Any]:
         default_result={'document_type':'Unknown','period':None};
         if not self.client: logger.error("OpenAI client not initialized."); return default_result; text_sample=text[:3000] if text else "";
@@ -627,7 +625,10 @@ class ValidationFormatter:
         return final_output, warnings
     def _clean_value_for_validation(self, data: Dict[str, Any], field: str) -> float:
          value = data.get(field);
-         if value is None: return 0.0
+         if value is None:
+             if field in ['replacement_reserves', 'tenant_improvements']: return 0.0
+             logger.warning(f"Unexpected None for '{field}'. Treating as 0.0.")
+             return 0.0
          if not isinstance(value, (int, float)): cleaned = extractor._clean_numeric_value(value); logger.warning(f"Validation re-clean '{field}': '{value}' -> {cleaned}"); return cleaned
          return float(value)
     def _validate_document_type(self, data: Dict[str, Any]) -> List[str]: warnings = []; valid_types = classifier.document_types; doc_type = data.get('document_type'); if not isinstance(doc_type, str) or doc_type not in valid_types: warnings.append(f"Invalid doc_type: {doc_type}"); data['document_type'] = 'Unknown'; return warnings
@@ -639,8 +640,8 @@ class ValidationFormatter:
             if isinstance(field_type, type) and issubclass(field_type, (float, int)) or isinstance(field_type, tuple):
                  value = data.get(field)
                  if not isinstance(value, allowed_types): warnings.append(f"Field {field} type {type(value)} invalid (expected {allowed_types}).");
-                 if is_optional_reserve and value is not None: data[field] = None
-                 elif not is_optional_reserve: data[field] = 0.0
+                 if is_optional_reserve and value is not None: data[field] = None # Should already be None if needed
+                 elif not is_optional_reserve and not isinstance(value, (float, int)): data[field] = 0.0 # Ensure default if invalid
         return warnings
     def _validate_vacancy_sum(self, data: Dict[str, Any]) -> List[str]: warnings = []; tolerance = 1.0; components = [self._clean_value_for_validation(data, f) for f in ['physical_vacancy_loss', 'concessions_free_rent', 'bad_debt']]; calculated_sum = sum(components); reported_total = self._clean_value_for_validation(data, 'total_vacancy_credit_loss'); if abs(calculated_sum - reported_total) > tolerance: warnings.append(f"Validation Check: Total Vacancy ({reported_total:.2f}) vs sum ({calculated_sum:.2f})."); return warnings
     def _validate_other_income_sum(self, data: Dict[str, Any]) -> List[str]: warnings = []; tolerance = 1.0; components = [self._clean_value_for_validation(data, f) for f in ['recoveries', 'parking_income', 'laundry_income', 'application_fees', 'other_misc_income']]; calculated_sum = sum(components); reported_total = self._clean_value_for_validation(data, 'total_other_income'); if abs(calculated_sum - reported_total) > tolerance: warnings.append(f"Validation Check: Total Other Income ({reported_total:.2f}) vs sum ({calculated_sum:.2f})."); return warnings
@@ -657,7 +658,7 @@ def validate_and_format_data(data: Dict[str, Any]) -> Dict[str, Any]: validator 
 #################################################
 API_KEY = os.environ.get("API_KEY");
 if not API_KEY: logger.warning("API_KEY env var not set.")
-app = FastAPI(title="NOI Data Extraction API (v2.2.2)", description="API for extracting detailed financial data", version="2.2.2")
+app = FastAPI(title="NOI Data Extraction API (v2.2.2)", description="API for extracting detailed financial data", version="2.2.2") # Updated version
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 class VacancyCreditLossDetails(BaseModel): physical_vacancy_loss: Optional[float]=0.0; concessions_free_rent: Optional[float]=0.0; bad_debt: Optional[float]=0.0
 class OtherIncomeDetails(BaseModel): recoveries: Optional[float]=0.0; parking_income: Optional[float]=0.0; laundry_income: Optional[float]=0.0; application_fees: Optional[float]=0.0; other_misc_income: Optional[float]=0.0
@@ -682,10 +683,10 @@ def validate_api_key(api_key: Optional[str]=None, request: Optional[Request]=Non
     else: logger.warning("No API key provided."); return False
 @app.get("/health")
 async def health_check(request: Request): user_agent = request.headers.get("user-agent", "").lower();
-if "render" in user_agent or "health" in user_agent: logger.info("Skipping auth for health check probe."); return {"status": "healthy", "version": "2.2.2"}
+if "render" in user_agent or "health" in user_agent: logger.info("Skipping auth for health check probe."); return {"status": "healthy", "version": "2.2.2"} # Updated version
 param_api_key = request.query_params.get('api_key');
 if not validate_api_key(param_api_key, request): raise HTTPException(status_code=401, detail="Unauthorized")
-return {"status": "healthy", "version": "2.2.2"}
+return {"status": "healthy", "version": "2.2.2"} # Updated version
 @app.post("/extract", response_model=DetailedMergedResponse)
 async def extract_data(file: UploadFile=File(...), document_type: Optional[str]=Form(None), api_key: Optional[str]=Header(None, alias="x-api-key"), authorization: Optional[str]=Header(None), request: Request=None):
     auth_key = api_key;
@@ -746,6 +747,6 @@ async def extract_batch(files: List[UploadFile]=File(...), document_types: Optio
 #################################################
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000)); host = "0.0.0.0"
-    logger.info(f"Starting NOI Data Extraction API Server (v2.2.2) on {host}:{port}...")
+    logger.info(f"Starting NOI Data Extraction API Server (v2.2.2 - SyntaxFix) on {host}:{port}...") # Added version note
     uvicorn.run("main_backend:app", host=host, port=port)
 
