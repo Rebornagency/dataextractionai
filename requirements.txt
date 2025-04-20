@@ -1,19 +1,32 @@
-fastapi==0.103.1
-uvicorn==0.23.2
-python-multipart==0.0.6
-pydantic==2.3.0
+# FastAPI framework and ASGI server
+fastapi>=0.100.0 # Use a recent stable version
+uvicorn[standard]>=0.23.0 # Includes standard dependencies like watchfiles for dev reload
+
+# OpenAI API client
 openai>=1.0.0
-numpy==1.24.3
-pandas==2.0.3
-openpyxl==3.1.2
-xlrd==2.0.1
-xlwt==1.3.0
-pdfplumber==0.10.2
-pypdfium2==4.30.1
-python-magic==0.4.27
-chardet==5.2.0
-requests==2.32.3
-requests-toolbelt==1.0.0
-tqdm==4.67.1
-python-dateutil==2.9.0.post0
-pytz==2025.2
+
+# File processing dependencies
+pandas>=2.0.0
+openpyxl>=3.1.0 # For .xlsx files
+# xlrd>=2.0.0 # Generally not needed for .xlsx, only legacy .xls
+pdfplumber>=0.10.0
+# pypdfium2>=4.0.0 # pdfplumber usually handles its PDF backend dependency
+
+# File type detection and encoding
+python-magic>=0.4.27
+chardet>=5.0.0
+
+# Pydantic for data validation (FastAPI dependency, but good to specify)
+pydantic>=2.0.0
+
+# Other utilities often helpful
+python-dotenv>=1.0.0 # For loading .env files locally (optional for Render)
+requests>=2.30.0 # For potential outgoing HTTP requests (though not used directly in this version)
+python-multipart>=0.0.6 # For handling file uploads in FastAPI
+
+# Add any other specific libraries your final code uses
+numpy>=1.24.0 # Used for NaN handling in pandas
+math # Standard library, no need to list
+
+# Consider adding specific versions if you encounter compatibility issues
+# Example: fastapi==0.103.1
