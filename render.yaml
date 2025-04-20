@@ -1,18 +1,32 @@
-# Render.yaml configuration for deployment
+# render.yaml
+# Blueprint for deploying the NOI Data Extraction API to Render
 
 services:
-  # A web service
+  # Define the Web Service for the FastAPI backend
   - type: web
-    name: noi-data-extraction-api
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
+    name: noi-extraction-api # Choose a name for your service
+    env: python # Specify the environment
+    runtime: python # Explicitly state runtime (matches runtime.txt)
+    plan: free # Or choose a paid plan (e.g., starter)
+    # Build commands: Install dependencies
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    # Start command: Run the FastAPI app using Uvicorn
+    # Assumes your Python file is named 'main_backend.py' and the FastAPI app instance is 'app'
+    startCommand: uvicorn main_backend:app --host 0.0.0.0 --port $PORT
+    # Environment variables
     envVars:
+      - key: PYTHON_VERSION # Matches runtime.txt
+        value: 3.11.5
       - key: OPENAI_API_KEY
-        sync: false # This will be set manually in the Render dashboard
-      - key: API_KEY
-        sync: false # This will be set manually in the Render dashboard
-      - key: PYTHON_VERSION
-        value: 3.10.0
-    healthCheckPath: /health
-    autoDeploy: true
+        sync: false # IMPORTANT: Set the actual value in Render's dashboard (Secret File or Env Var)
+      - key: API_KEY # The key for authenticating requests TO this API
+        sync: false # IMPORTANT: Set the actual value in Render's dashboard (Secret File or Env Var)
+      # Add any other environment variables your application might need
+      # - key: DATABASE_URL
+      #   sync: false
+    # Health Check configuration
+    healthCheckPath: /health # Points to your FastAPI health check endpoint
+    # Optional: Configure auto-deploy on push to your Git repository
+    # autoDeploy: yes
+    # repo: https://github.com/your_username/your_repo_name # Example
+    # branch: main # Example
