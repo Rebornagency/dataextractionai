@@ -1,5 +1,5 @@
 """
-Data Extraction AI - Combined Module (Enhanced + Application Fees)
+Data Extraction AI - Combined Module (Enhanced + Application Fees + NumPy Fix)
 This file contains all modules from the Data Extraction AI project into a single file
 for easy upload to any LLM or deployment.
 
@@ -17,6 +17,7 @@ Enhancements:
 - Extracts optional reserves
 - Calculates EGI explicitly
 - Returns a more structured JSON output
+- Fixed NumPy 2.0 float type error
 
 Dependencies (install via requirements.txt):
 - fastapi, uvicorn, openai, pandas, openpyxl, pdfplumber, python-magic,
@@ -55,7 +56,7 @@ logging.basicConfig(
 logger = logging.getLogger('data_extraction_api_service')
 
 #################################################
-# Preprocessing Module
+# Preprocessing Module (Unchanged from previous enhanced version)
 #################################################
 class FilePreprocessor:
     """Main class for preprocessing different file types"""
@@ -865,11 +866,12 @@ def map_noi_tool_to_extraction_type(noi_tool_type: str) -> str:
 
 
 #################################################
-# GPT Data Extractor Module (MERGED: Detailed NOI + Application Fees)
+# GPT Data Extractor Module (MERGED + NumPy Fix)
 #################################################
 class GPTDataExtractor:
     """
     Class for extracting detailed financial data (incl. Application Fees) using GPT-4.
+    Includes fix for NumPy 2.0 float type error.
     """
 
     def __init__(self, api_key: Optional[str] = None, sample_limit: int = 4000):
@@ -1073,14 +1075,18 @@ class GPTDataExtractor:
             logger.error(f"Unexpected error calling OpenAI API for extraction: {str(e)}", exc_info=True)
             return None # Return None on other errors
 
+    # --- THIS FUNCTION IS MODIFIED ---
     def _clean_numeric_value(self, value: Any) -> float:
         """Attempts to clean and convert a value to a float."""
         if isinstance(value, (int, float)):
-            # Handle potential numpy types just in case
+            # Handle potential numpy int types
             if isinstance(value, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64,
                                   np.uint8, np.uint16, np.uint32, np.uint64)):
                  return float(value)
-            if isinstance(value, (np.float_, np.float16, np.float32, np.float64)):
+            # Handle potential numpy float types (excluding the deprecated np.float_)
+            # Check against standard float and specific numpy float types
+            # REMOVED np.float_ from this tuple check
+            if isinstance(value, (float, np.float16, np.float32, np.float64)):
                  # Check for NaN before converting
                  return float(value) if not np.isnan(value) else 0.0
             # Standard int/float
@@ -1105,6 +1111,7 @@ class GPTDataExtractor:
                 return 0.0 # Default to 0 if conversion fails
         # logger.debug(f"Could not convert non-string/numeric type to float: {type(value)}")
         return 0.0 # Default non-numeric/non-string types to 0
+    # --- END OF MODIFICATION ---
 
     def _validate_and_clean_extraction_result(self, result: Dict[str, Any]) -> None:
         """Validates extracted data, cleans numeric fields, and recalculates totals."""
@@ -1213,8 +1220,8 @@ class GPTDataExtractor:
             "other_opex": 0.0,
             "total_operating_expenses": 0.0,
             "net_operating_income": 0.0,
-            "replacement_reserves": 0.0,
-            "tenant_improvements": 0.0
+            "replacement_reserves": 0.0, # Default to 0.0, formatter allows None
+            "tenant_improvements": 0.0  # Default to 0.0, formatter allows None
         }
 
 # Create an instance for potential direct use (though API is primary)
@@ -1225,11 +1232,12 @@ def extract_financial_data(text_or_data: Union[str, Dict[str, Any]], document_ty
     return extractor.extract(text_or_data, document_type, period)
 
 #################################################
-# Validation Formatter Module (MERGED: Detailed NOI + Application Fees)
+# Validation Formatter Module (MERGED + NumPy Fix Aware)
 #################################################
 class ValidationFormatter:
     """
     Class for validating and formatting extracted detailed financial data (incl. Application Fees).
+    Aware of NumPy fix in extractor.
     """
 
     def __init__(self):
@@ -1262,8 +1270,8 @@ class ValidationFormatter:
             'other_opex': (float, int),
             'total_operating_expenses': (float, int),
             'net_operating_income': (float, int),
-            'replacement_reserves': (float, int),
-            'tenant_improvements': (float, int)
+            'replacement_reserves': (float, int, type(None)), # Allow None explicitly
+            'tenant_improvements': (float, int, type(None))  # Allow None explicitly
         }
 
         # Define validation rules (updated for merged structure)
@@ -1319,13 +1327,20 @@ class ValidationFormatter:
         return final_output, warnings # Return formatted data and warnings separately
 
     def _clean_value_for_validation(self, data: Dict[str, Any], field: str) -> float:
-         """ Safely gets a numeric value, assuming it was already cleaned by extractor """
-         # Use .get with default 0.0, as extractor should have populated and cleaned
-         value = data.get(field, 0.0)
-         # Final check for None or non-numeric types just in case
+         """ Safely gets a numeric value, assuming it was already cleaned by extractor. Handles None by returning 0.0 """
+         value = data.get(field) # Use .get() which returns None if key missing
+         if value is None:
+             # Reserves are allowed to be None, treat as 0 for sum checks
+             if field in ['replacement_reserves', 'tenant_improvements']:
+                 return 0.0
+             # Other fields should ideally not be None after extractor cleaning
+             logger.warning(f"Validation found unexpected None for '{field}'. Treating as 0.0.")
+             return 0.0
+         # Use extractor's cleaning logic if needed as a fallback, though data should be clean
          if not isinstance(value, (int, float)):
-              logger.warning(f"Validation found non-numeric value for '{field}': {value}. Using 0.0.")
-              return 0.0
+              cleaned = extractor._clean_numeric_value(value)
+              logger.warning(f"Validation needed to re-clean field '{field}': '{value}' -> {cleaned}")
+              return cleaned
          return float(value)
 
 
@@ -1352,14 +1367,25 @@ class ValidationFormatter:
         """Validate numeric fields are indeed numeric after cleaning by extractor"""
         warnings = []
         for field, field_type in self.expected_fields.items():
-            if field_type in [(float, int), float, int]:
-                value = data.get(field)
-                # Allow None only for optional reserves
-                if field in ['replacement_reserves', 'tenant_improvements'] and value is None:
-                     continue
-                if not isinstance(value, (float, int)):
-                     warnings.append(f"Field {field} ('{value}') is not numeric type after cleaning.")
-                     data[field] = 0.0 # Default non-numeric to 0
+            # Check fields expected to be numeric or None (for reserves)
+            is_optional_reserve = field in ['replacement_reserves', 'tenant_improvements']
+            allowed_types = (float, int)
+            if is_optional_reserve:
+                allowed_types = (float, int, type(None))
+
+            if isinstance(field_type, type) and issubclass(field_type, (float, int)): # Simple type check
+                 value = data.get(field)
+                 if not isinstance(value, allowed_types):
+                      warnings.append(f"Field {field} ('{value}') type {type(value)} is not in allowed {allowed_types}.")
+                      # Attempt recovery for reserves if None was expected but got something else invalid
+                      if is_optional_reserve and value is not None: data[field] = None
+                      elif not is_optional_reserve: data[field] = 0.0 # Default others to 0.0
+            elif isinstance(field_type, tuple): # Tuple type check (like (float, int))
+                 value = data.get(field)
+                 if not isinstance(value, allowed_types):
+                      warnings.append(f"Field {field} ('{value}') type {type(value)} is not in allowed {allowed_types}.")
+                      if is_optional_reserve and value is not None: data[field] = None
+                      elif not is_optional_reserve: data[field] = 0.0
         return warnings
 
     # --- Updated/New Validation Rules ---
@@ -1449,51 +1475,52 @@ class ValidationFormatter:
             Formatted data in the required JSON structure.
         """
         # Data should already be cleaned, just structure it
+        # Use .get() to handle potential missing keys gracefully, defaulting to None or 0.0
         output = {
             "document_type": data.get('document_type', 'Unknown'),
             "period": data.get('period', 'Unknown'),
             "financials": {
                 "income_summary": {
-                    "gross_potential_rent": data.get('gross_potential_rent'),
-                    "loss_to_lease": data.get('loss_to_lease'),
+                    "gross_potential_rent": data.get('gross_potential_rent', 0.0),
+                    "loss_to_lease": data.get('loss_to_lease', 0.0),
                     "vacancy_credit_loss_details": {
-                        "physical_vacancy_loss": data.get('physical_vacancy_loss'),
-                        "concessions_free_rent": data.get('concessions_free_rent'),
-                        "bad_debt": data.get('bad_debt'),
+                        "physical_vacancy_loss": data.get('physical_vacancy_loss', 0.0),
+                        "concessions_free_rent": data.get('concessions_free_rent', 0.0),
+                        "bad_debt": data.get('bad_debt', 0.0),
                     },
-                    "total_vacancy_credit_loss": data.get('total_vacancy_credit_loss'),
+                    "total_vacancy_credit_loss": data.get('total_vacancy_credit_loss', 0.0),
                     "other_income_details": {
-                        "recoveries": data.get('recoveries'),
-                        "parking_income": data.get('parking_income'),
-                        "laundry_income": data.get('laundry_income'),
-                        "application_fees": data.get('application_fees'), # Added application_fees
-                        "other_misc_income": data.get('other_misc_income'),
+                        "recoveries": data.get('recoveries', 0.0),
+                        "parking_income": data.get('parking_income', 0.0),
+                        "laundry_income": data.get('laundry_income', 0.0),
+                        "application_fees": data.get('application_fees', 0.0), # Added application_fees
+                        "other_misc_income": data.get('other_misc_income', 0.0),
                     },
-                    "total_other_income": data.get('total_other_income'),
-                    "effective_gross_income": data.get('effective_gross_income')
+                    "total_other_income": data.get('total_other_income', 0.0),
+                    "effective_gross_income": data.get('effective_gross_income', 0.0)
                 },
                 "operating_expenses": {
                     "expense_details": {
-                        "property_taxes": data.get('property_taxes'),
-                        "insurance": data.get('insurance'),
-                        "property_management_fees": data.get('property_management_fees'),
-                        "repairs_maintenance": data.get('repairs_maintenance'),
-                        "utilities": data.get('utilities'),
-                        "payroll": data.get('payroll'),
-                        "admin_office_costs": data.get('admin_office_costs'),
-                        "marketing_advertising": data.get('marketing_advertising'),
-                        "other_opex": data.get('other_opex'),
+                        "property_taxes": data.get('property_taxes', 0.0),
+                        "insurance": data.get('insurance', 0.0),
+                        "property_management_fees": data.get('property_management_fees', 0.0),
+                        "repairs_maintenance": data.get('repairs_maintenance', 0.0),
+                        "utilities": data.get('utilities', 0.0),
+                        "payroll": data.get('payroll', 0.0),
+                        "admin_office_costs": data.get('admin_office_costs', 0.0),
+                        "marketing_advertising": data.get('marketing_advertising', 0.0),
+                        "other_opex": data.get('other_opex', 0.0),
                     },
-                    "total_operating_expenses": data.get('total_operating_expenses'),
+                    "total_operating_expenses": data.get('total_operating_expenses', 0.0),
                 },
-                "net_operating_income": data.get('net_operating_income'),
-                "reserves": { # Keep reserves section, values might be 0
-                    "replacement_reserves": data.get('replacement_reserves'),
-                    "tenant_improvements": data.get('tenant_improvements')
+                "net_operating_income": data.get('net_operating_income', 0.0),
+                # Include reserves section, allowing None values
+                "reserves": {
+                    "replacement_reserves": data.get('replacement_reserves'), # Keep None if None
+                    "tenant_improvements": data.get('tenant_improvements')  # Keep None if None
                 }
             }
         }
-        # No need to remove reserves section, 0 is valid data.
         return output
 
 def validate_and_format_data(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1521,9 +1548,9 @@ if not API_KEY:
 
 # Create FastAPI app
 app = FastAPI(
-    title="NOI Data Extraction API (Enhanced + App Fees)",
+    title="NOI Data Extraction API (Enhanced + App Fees + NumPy Fix)",
     description="API for extracting detailed financial data (incl. Application Fees) from real estate documents",
-    version="2.2.0" # Version bump
+    version="2.2.1" # Version bump for fix
 )
 
 # Add CORS middleware
@@ -1635,13 +1662,13 @@ async def health_check(request: Request):
     user_agent = request.headers.get("user-agent", "").lower()
     if "render" in user_agent or "health" in user_agent:
          logger.info("Skipping auth for health check probe.")
-         return {"status": "healthy", "version": "2.2.0"} # Updated version
+         return {"status": "healthy", "version": "2.2.1"} # Updated version
 
     param_api_key = request.query_params.get('api_key')
     if not validate_api_key(param_api_key, request):
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing API Key")
 
-    return {"status": "healthy", "version": "2.2.0"} # Updated version
+    return {"status": "healthy", "version": "2.2.1"} # Updated version
 
 # Extract data from a single file (MODIFIED Response Model)
 @app.post("/extract", response_model=DetailedMergedResponse) # Use updated model
@@ -1686,7 +1713,7 @@ async def extract_data(
         logger.info(f"Document classified as '{extraction_doc_type}' for period '{period}'")
 
         extraction_result = extract_financial_data(preprocessed_data, extraction_doc_type, period)
-        formatted_result = validate_and_format_data(extraction_result) # Returns final structure
+        formatted_result = validate_and_format_data(extraction_result) # Returns final structure dict
 
         logger.info(f"Successfully processed {file.filename} in {time.time() - start_process_time:.2f}s")
         return formatted_result # Return the validated and formatted dict
@@ -1778,21 +1805,19 @@ async def extract_batch(
         except Exception as e:
             logger.error(f"Error processing batch file {file.filename}: {str(e)}", exc_info=True)
             # Create error structure matching the response model as best as possible
-            file_result_data = {
-                 "filename": file.filename or "unknown_file",
-                 "error": f"Failed to process: {str(e)}",
-                 "document_type": extraction_doc_type, # Use last known type
-                 "period": period or "Unknown", # Use last known period
-                 "financials": Financials( # Provide default nested models for error case
-                      income_summary=IncomeSummary(
-                           vacancy_credit_loss_details=VacancyCreditLossDetails(),
-                           other_income_details=OtherIncomeDetails()
-                      ),
-                      operating_expenses=OperatingExpenses(
-                           expense_details=ExpenseDetails()
-                      )
-                 ).dict() # Convert default Pydantic models to dict for consistency here
-            }
+            # Use the _empty_result structure and add error info
+            error_data = extractor._empty_result(extraction_doc_type, period)
+            error_data['filename'] = file.filename or "unknown_file"
+            error_data['error'] = f"Failed to process: {str(e)}"
+
+            # Convert to the final formatted structure expected by the response model
+            formatter = ValidationFormatter()
+            error_output = formatter._format_output(error_data) # Format the empty data
+            error_output['filename'] = file.filename or "unknown_file" # Ensure filename is present
+            error_output['error'] = f"Failed to process: {str(e)}" # Add error message
+            file_result_data = error_output # Use the formatted error structure
+
+
         finally:
              if temp_file_path and os.path.exists(temp_file_path):
                   try: os.unlink(temp_file_path)
@@ -1816,6 +1841,7 @@ if __name__ == "__main__":
 
     # Consider adding --reload flag for local development if needed
     # Example: uvicorn.run("main_backend:app", host=host, port=port, reload=True)
-    logger.info(f"Starting NOI Data Extraction API Server on {host}:{port}...")
-    uvicorn.run("main_backend:app", host=host, port=port) # Reference the app instance directly
+    logger.info(f"Starting NOI Data Extraction API Server (v2.2.1) on {host}:{port}...")
+    # Ensure the string matches the filename and FastAPI instance variable name
+    uvicorn.run("main_backend:app", host=host, port=port)
 
