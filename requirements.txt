@@ -26,7 +26,6 @@ python-multipart>=0.0.6 # For handling file uploads in FastAPI
 
 # Add any other specific libraries your final code uses
 numpy>=1.24.0 # Used for NaN handling in pandas
-math # Standard library, no need to list
 
 # Consider adding specific versions if you encounter compatibility issues
 # Example: fastapi==0.103.1
