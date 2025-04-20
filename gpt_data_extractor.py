@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, Union
 from openai import OpenAI
 
 # Configure logging
-t_logging.basicConfig(
+logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
