@@ -1099,11 +1099,15 @@ def validate_api_key(api_key: Optional[str]=None, request: Optional[Request]=Non
         else: logger.warning(f"Invalid API key via {source}."); return False
     else: logger.warning("No API key provided."); return False
 @app.get("/health")
-async def health_check(request: Request): user_agent = request.headers.get("user-agent", "").lower();
-if "render" in user_agent or "health" in user_agent: logger.info("Skipping auth for health check probe."); return {"status": "healthy", "version": "2.2.4"} # Updated version
-param_api_key = request.query_params.get('api_key');
-if not validate_api_key(param_api_key, request): raise HTTPException(status_code=401, detail="Unauthorized")
-return {"status": "healthy", "version": "2.2.4"} # Updated version
+async def health_check(request: Request): 
+    user_agent = request.headers.get("user-agent", "").lower();
+    if "render" in user_agent or "health" in user_agent: 
+        logger.info("Skipping auth for health check probe."); 
+        return {"status": "healthy", "version": "2.2.4"} # Updated version
+    param_api_key = request.query_params.get('api_key');
+    if not validate_api_key(param_api_key, request): 
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"status": "healthy", "version": "2.2.4"} # Updated version
 @app.post("/extract", response_model=DetailedMergedResponse)
 async def extract_data(file: UploadFile=File(...), document_type: Optional[str]=Form(None), api_key: Optional[str]=Header(None, alias="x-api-key"), authorization: Optional[str]=Header(None), request: Request=None):
     auth_key = api_key;
