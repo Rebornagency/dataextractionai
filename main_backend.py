@@ -1087,6 +1087,9 @@ class Financials(BaseModel): income_summary: IncomeSummary; operating_expenses: 
 class DetailedMergedResponse(BaseModel): document_type: str; period: str; financials: Financials; filename: Optional[str]=None; validation_warnings: Optional[List[str]]=None; error: Optional[str]=None
 def validate_api_key(provided_key: Optional[str], request: Request) -> bool:
     """Validate API key from various sources."""
+    # Get API key from environment within the function scope
+    env_api_key = os.environ.get("API_KEY")
+    
     if not env_api_key:
         logger.warning("No API_KEY set in environment, skipping authentication")
         return True
