@@ -1085,19 +1085,36 @@ class OperatingExpenses(BaseModel): expense_details: ExpenseDetails; total_opera
 class Reserves(BaseModel): replacement_reserves: Optional[float]=None; tenant_improvements: Optional[float]=None
 class Financials(BaseModel): income_summary: IncomeSummary; operating_expenses: OperatingExpenses; net_operating_income: Optional[float]=0.0; reserves: Optional[Reserves]=None
 class DetailedMergedResponse(BaseModel): document_type: str; period: str; financials: Financials; filename: Optional[str]=None; validation_warnings: Optional[List[str]]=None; error: Optional[str]=None
-def validate_api_key(api_key: Optional[str]=None, request: Optional[Request]=None) -> bool:
-    env_api_key = os.environ.get("API_KEY");
-    if not env_api_key: logger.warning("API_KEY env var not set. Allowing access (DEV ONLY)."); return True
-    provided_key = None; source = "None"
-    if api_key: provided_key=api_key; source="Parameter"
-    elif request: header_api_key = request.headers.get('x-api-key');
-    if header_api_key: provided_key=header_api_key; source="x-api-key Header"
-    else: auth_header = request.headers.get('Authorization');
-    if auth_header and auth_header.startswith('Bearer '): provided_key=auth_header.replace('Bearer ', ''); source="Authorization Header"
-    if provided_key:
-        if provided_key == env_api_key: logger.info(f"API key validated via {source}"); return True
-        else: logger.warning(f"Invalid API key via {source}."); return False
-    else: logger.warning("No API key provided."); return False
+def validate_api_key(provided_key: Optional[str], request: Request) -> bool:
+    """Validate API key from various sources."""
+    if not env_api_key:
+        logger.warning("No API_KEY set in environment, skipping authentication")
+        return True
+    
+    # Try to get key from query params, headers, or Authorization header
+    user_agent = request.headers.get("user-agent", "").lower() if request else ""
+    param_api_key = provided_key
+    auth_header = request.headers.get("Authorization") if request else None
+    header_api_key = None  # Initialize this variable
+    source = "Query Parameter"
+    
+    if auth_header and auth_header.startswith('Bearer '): 
+        header_api_key = auth_header.replace('Bearer ', '')
+        source = "Authorization Header"
+    
+    # Use header_api_key if available, otherwise use provided_key
+    final_key = header_api_key if header_api_key else provided_key
+    
+    if final_key:
+        if final_key == env_api_key: 
+            logger.info(f"API key validated via {source}")
+            return True
+        else: 
+            logger.warning(f"Invalid API key via {source}.")
+            return False
+    else: 
+        logger.warning("No API key provided.")
+        return False
 @app.get("/health")
 async def health_check(request: Request): 
     user_agent = request.headers.get("user-agent", "").lower();
