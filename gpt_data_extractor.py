@@ -220,6 +220,10 @@ class GPTDataExtractor:
 4. Net Operating Income (NOI):
    - Calculate as EGI minus Total Operating Expenses
 
+5. Property Information:
+   - Property ID (look for any unique identifier for the property)
+   - Period (in YYYY-MM format, extract from document date or header)
+
 For each data point:
 - Extract the exact amount from the document
 - Convert all amounts to numeric values (remove currency symbols, commas, etc.)
@@ -229,21 +233,19 @@ For each data point:
 
 Respond in JSON format with the following structure:
 {
-  "income": {
-    "gross_potential_rent": number or null,
-    "vacancy_loss": number or null,
-    "concessions": number or null,
-    "bad_debt": number or null,
-    "recoveries": number or null,
-    "other_income": {
-      "application_fees": number or null,
-      "additional_items": [
-        {"name": "item name", "amount": number}
-      ],
-      "total": number or null
-    },
-    "effective_gross_income": number or null
+  "gross_potential_rent": number or null,
+  "vacancy_loss": number or null,
+  "concessions": number or null,
+  "bad_debt": number or null,
+  "recoveries": number or null,
+  "other_income": {
+    "application_fees": number or null,
+    "additional_items": [
+      {"name": "item name", "amount": number}
+    ],
+    "total": number or null
   },
+  "effective_gross_income": number or null,
   "operating_expenses": {
     "payroll": number or null,
     "administrative": number or null,
@@ -270,6 +272,8 @@ Respond in JSON format with the following structure:
     "total_reserves": number or null
   },
   "net_operating_income": number or null,
+  "property_id": string or null,
+  "period": string in YYYY-MM format or null,
   "confidence_score": number between 0 and 1
 }
 

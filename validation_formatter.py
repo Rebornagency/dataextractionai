@@ -40,23 +40,27 @@ def validate_and_format_data(extraction_result: Dict[str, Any]) -> Dict[str, Any
     
     try:
         # Validate and format income data
-        if 'income' in formatted_data:
-            formatted_data['income'] = _validate_income(formatted_data['income'])
+        formatted_data = _validate_income_fields(formatted_data)
             
         # Validate and format operating expenses
-        if 'operating_expenses' in formatted_data:
-            formatted_data['operating_expenses'] = _validate_operating_expenses(formatted_data['operating_expenses'])
+        formatted_data = _validate_operating_expenses_fields(formatted_data)
             
         # Validate and format reserves
-        if 'reserves' in formatted_data:
-            formatted_data['reserves'] = _validate_reserves(formatted_data['reserves'])
+        formatted_data = _validate_reserves_fields(formatted_data)
             
         # Validate and format NOI
         formatted_data['net_operating_income'] = _validate_noi(
             formatted_data.get('net_operating_income'),
-            formatted_data.get('income', {}).get('effective_gross_income'),
+            formatted_data.get('effective_gross_income'),
             formatted_data.get('operating_expenses', {}).get('total_operating_expenses')
         )
+        
+        # Validate property_id and period
+        formatted_data['property_id'] = formatted_data.get('property_id')
+        formatted_data['period'] = _validate_period(formatted_data.get('period'))
+        
+        # Perform additional validation checks
+        formatted_data = _perform_validation_checks(formatted_data)
         
         # Add validation status
         formatted_data['validation'] = {
@@ -73,272 +77,349 @@ def validate_and_format_data(extraction_result: Dict[str, Any]) -> Dict[str, Any
         
     return formatted_data
 
-def _validate_income(income_data: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_income_fields(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Validate and format income data
+    Validate and format income fields
     
     Args:
-        income_data: Raw income data
+        data: Raw data
         
     Returns:
-        Validated and formatted income data
+        Validated and formatted data
     """
-    if not income_data or not isinstance(income_data, dict):
-        return {
-            'gross_potential_rent': None,
-            'vacancy_loss': None,
-            'concessions': None,
-            'bad_debt': None,
-            'recoveries': None,
-            'other_income': {
-                'application_fees': None,
-                'additional_items': [],
-                'total': None
-            },
-            'effective_gross_income': None
-        }
-        
-    # Ensure all fields are present
-    validated_income = {
-        'gross_potential_rent': _validate_numeric(income_data.get('gross_potential_rent')),
-        'vacancy_loss': _validate_numeric(income_data.get('vacancy_loss')),
-        'concessions': _validate_numeric(income_data.get('concessions')),
-        'bad_debt': _validate_numeric(income_data.get('bad_debt')),
-        'recoveries': _validate_numeric(income_data.get('recoveries')),
-        'other_income': _validate_other_income(income_data.get('other_income', {})),
-        'effective_gross_income': _validate_numeric(income_data.get('effective_gross_income'))
-    }
+    # Extract income fields from flattened structure
+    gross_potential_rent = _validate_numeric(data.get('gross_potential_rent'))
+    vacancy_loss = _validate_numeric(data.get('vacancy_loss'))
+    concessions = _validate_numeric(data.get('concessions'))
+    bad_debt = _validate_numeric(data.get('bad_debt'))
+    recoveries = _validate_numeric(data.get('recoveries'))
     
-    # Calculate EGI if not provided or validate the provided value
-    calculated_egi = _calculate_egi(
-        validated_income['gross_potential_rent'],
-        validated_income['vacancy_loss'],
-        validated_income['concessions'],
-        validated_income['bad_debt'],
-        validated_income['recoveries'],
-        validated_income['other_income']['total']
-    )
+    # Handle other_income which is still a nested structure
+    other_income = data.get('other_income', {})
+    if not isinstance(other_income, dict):
+        other_income = {}
     
-    if calculated_egi is not None:
-        if validated_income['effective_gross_income'] is None:
-            validated_income['effective_gross_income'] = calculated_egi
-        else:
-            # Check if the provided EGI is close to the calculated EGI
-            if not _is_close(validated_income['effective_gross_income'], calculated_egi, 0.05):
-                logger.warning(f"Provided EGI ({validated_income['effective_gross_income']}) differs from calculated EGI ({calculated_egi})")
-                # Use the calculated value as it's more reliable
-                validated_income['effective_gross_income'] = calculated_egi
-                
-    return validated_income
-
-def _validate_other_income(other_income_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Validate and format other income data
-    
-    Args:
-        other_income_data: Raw other income data
-        
-    Returns:
-        Validated and formatted other income data
-    """
-    if not other_income_data or not isinstance(other_income_data, dict):
-        return {
-            'application_fees': None,
-            'additional_items': [],
-            'total': None
-        }
-        
-    # Validate application fees
-    application_fees = _validate_numeric(other_income_data.get('application_fees'))
-    
-    # Validate additional items
+    application_fees = _validate_numeric(other_income.get('application_fees'))
     additional_items = []
-    if 'additional_items' in other_income_data and isinstance(other_income_data['additional_items'], list):
-        for item in other_income_data['additional_items']:
+    if 'additional_items' in other_income and isinstance(other_income['additional_items'], list):
+        for item in other_income['additional_items']:
             if isinstance(item, dict) and 'name' in item and 'amount' in item:
                 validated_item = {
                     'name': str(item['name']),
                     'amount': _validate_numeric(item['amount'])
                 }
                 additional_items.append(validated_item)
-                
-    # Validate total
-    total = _validate_numeric(other_income_data.get('total'))
     
-    # Calculate total if not provided or validate the provided value
-    calculated_total = application_fees
+    other_income_total = _validate_numeric(other_income.get('total'))
+    
+    # Calculate other_income total if not provided
+    calculated_other_income = application_fees
     for item in additional_items:
         if item['amount'] is not None:
-            if calculated_total is None:
-                calculated_total = item['amount']
+            if calculated_other_income is None:
+                calculated_other_income = item['amount']
             else:
-                calculated_total += item['amount']
-                
-    if calculated_total is not None:
-        if total is None:
-            total = calculated_total
-        else:
-            # Check if the provided total is close to the calculated total
-            if not _is_close(total, calculated_total, 0.05):
-                logger.warning(f"Provided other income total ({total}) differs from calculated total ({calculated_total})")
-                # Use the calculated value as it's more reliable
-                total = calculated_total
-                
-    return {
+                calculated_other_income += item['amount']
+    
+    if calculated_other_income is not None:
+        if other_income_total is None:
+            other_income_total = calculated_other_income
+        elif not _is_close(other_income_total, calculated_other_income, 0.05):
+            logger.warning(f"Provided other income total ({other_income_total}) differs from calculated total ({calculated_other_income})")
+            other_income_total = calculated_other_income
+    
+    # Validate EGI
+    effective_gross_income = _validate_numeric(data.get('effective_gross_income'))
+    
+    # Calculate EGI if not provided
+    calculated_egi = _calculate_egi(
+        gross_potential_rent,
+        vacancy_loss,
+        concessions,
+        bad_debt,
+        recoveries,
+        other_income_total
+    )
+    
+    if calculated_egi is not None:
+        if effective_gross_income is None:
+            effective_gross_income = calculated_egi
+        elif not _is_close(effective_gross_income, calculated_egi, 0.05):
+            logger.warning(f"Provided EGI ({effective_gross_income}) differs from calculated EGI ({calculated_egi})")
+            effective_gross_income = calculated_egi
+    
+    # Update data with validated values
+    data['gross_potential_rent'] = gross_potential_rent
+    data['vacancy_loss'] = vacancy_loss
+    data['concessions'] = concessions
+    data['bad_debt'] = bad_debt
+    data['recoveries'] = recoveries
+    data['other_income'] = {
         'application_fees': application_fees,
         'additional_items': additional_items,
-        'total': total
+        'total': other_income_total
     }
+    data['effective_gross_income'] = effective_gross_income
+    
+    return data
 
-def _validate_operating_expenses(expenses_data: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_operating_expenses_fields(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Validate and format operating expenses data
+    Validate and format operating expenses fields
     
     Args:
-        expenses_data: Raw operating expenses data
+        data: Raw data
         
     Returns:
-        Validated and formatted operating expenses data
+        Validated and formatted data
     """
-    if not expenses_data or not isinstance(expenses_data, dict):
-        return {
-            'payroll': None,
-            'administrative': None,
-            'marketing': None,
-            'utilities': None,
-            'repairs_maintenance': None,
-            'contract_services': None,
-            'make_ready': None,
-            'turnover': None,
-            'property_taxes': None,
-            'insurance': None,
-            'management_fees': None,
-            'other_operating_expenses': [],
-            'total_operating_expenses': None
-        }
-        
+    # Extract operating expenses from nested structure
+    operating_expenses = data.get('operating_expenses', {})
+    if not isinstance(operating_expenses, dict):
+        operating_expenses = {}
+    
     # Validate standard expense categories
-    validated_expenses = {
-        'payroll': _validate_numeric(expenses_data.get('payroll')),
-        'administrative': _validate_numeric(expenses_data.get('administrative')),
-        'marketing': _validate_numeric(expenses_data.get('marketing')),
-        'utilities': _validate_numeric(expenses_data.get('utilities')),
-        'repairs_maintenance': _validate_numeric(expenses_data.get('repairs_maintenance')),
-        'contract_services': _validate_numeric(expenses_data.get('contract_services')),
-        'make_ready': _validate_numeric(expenses_data.get('make_ready')),
-        'turnover': _validate_numeric(expenses_data.get('turnover')),
-        'property_taxes': _validate_numeric(expenses_data.get('property_taxes')),
-        'insurance': _validate_numeric(expenses_data.get('insurance')),
-        'management_fees': _validate_numeric(expenses_data.get('management_fees')),
-        'other_operating_expenses': [],
-        'total_operating_expenses': _validate_numeric(expenses_data.get('total_operating_expenses'))
-    }
+    payroll = _validate_numeric(operating_expenses.get('payroll'))
+    administrative = _validate_numeric(operating_expenses.get('administrative'))
+    marketing = _validate_numeric(operating_expenses.get('marketing'))
+    utilities = _validate_numeric(operating_expenses.get('utilities'))
+    repairs_maintenance = _validate_numeric(operating_expenses.get('repairs_maintenance'))
+    contract_services = _validate_numeric(operating_expenses.get('contract_services'))
+    make_ready = _validate_numeric(operating_expenses.get('make_ready'))
+    turnover = _validate_numeric(operating_expenses.get('turnover'))
+    property_taxes = _validate_numeric(operating_expenses.get('property_taxes'))
+    insurance = _validate_numeric(operating_expenses.get('insurance'))
+    management_fees = _validate_numeric(operating_expenses.get('management_fees'))
     
     # Validate other operating expenses
-    if 'other_operating_expenses' in expenses_data and isinstance(expenses_data['other_operating_expenses'], list):
-        for item in expenses_data['other_operating_expenses']:
+    other_operating_expenses = []
+    if 'other_operating_expenses' in operating_expenses and isinstance(operating_expenses['other_operating_expenses'], list):
+        for item in operating_expenses['other_operating_expenses']:
             if isinstance(item, dict) and 'name' in item and 'amount' in item:
                 validated_item = {
                     'name': str(item['name']),
                     'amount': _validate_numeric(item['amount'])
                 }
-                validated_expenses['other_operating_expenses'].append(validated_item)
-                
-    # Calculate total if not provided or validate the provided value
+                other_operating_expenses.append(validated_item)
+    
+    # Validate total operating expenses
+    total_operating_expenses = _validate_numeric(operating_expenses.get('total_operating_expenses'))
+    
+    # Calculate total if not provided
     calculated_total = None
-    for key, value in validated_expenses.items():
-        if key != 'other_operating_expenses' and key != 'total_operating_expenses' and value is not None:
+    for value in [payroll, administrative, marketing, utilities, repairs_maintenance, 
+                 contract_services, make_ready, turnover, property_taxes, insurance, management_fees]:
+        if value is not None:
             if calculated_total is None:
                 calculated_total = value
             else:
                 calculated_total += value
-                
+    
     # Add other operating expenses to the total
-    for item in validated_expenses['other_operating_expenses']:
+    for item in other_operating_expenses:
         if item['amount'] is not None:
             if calculated_total is None:
                 calculated_total = item['amount']
             else:
                 calculated_total += item['amount']
-                
-    if calculated_total is not None:
-        if validated_expenses['total_operating_expenses'] is None:
-            validated_expenses['total_operating_expenses'] = calculated_total
-        else:
-            # Check if the provided total is close to the calculated total
-            if not _is_close(validated_expenses['total_operating_expenses'], calculated_total, 0.05):
-                logger.warning(f"Provided operating expenses total ({validated_expenses['total_operating_expenses']}) differs from calculated total ({calculated_total})")
-                # Use the calculated value as it's more reliable
-                validated_expenses['total_operating_expenses'] = calculated_total
-                
-    return validated_expenses
-
-def _validate_reserves(reserves_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Validate and format reserves data
     
-    Args:
-        reserves_data: Raw reserves data
-        
-    Returns:
-        Validated and formatted reserves data
-    """
-    if not reserves_data or not isinstance(reserves_data, dict):
-        return {
-            'replacement_reserves': None,
-            'capital_expenditures': None,
-            'other_reserves': [],
-            'total_reserves': None
-        }
-        
-    # Validate standard reserve categories
-    validated_reserves = {
-        'replacement_reserves': _validate_numeric(reserves_data.get('replacement_reserves')),
-        'capital_expenditures': _validate_numeric(reserves_data.get('capital_expenditures')),
-        'other_reserves': [],
-        'total_reserves': _validate_numeric(reserves_data.get('total_reserves'))
+    if calculated_total is not None:
+        if total_operating_expenses is None:
+            total_operating_expenses = calculated_total
+        elif not _is_close(total_operating_expenses, calculated_total, 0.05):
+            logger.warning(f"Provided operating expenses total ({total_operating_expenses}) differs from calculated total ({calculated_total})")
+            total_operating_expenses = calculated_total
+    
+    # Update data with validated values
+    data['operating_expenses'] = {
+        'payroll': payroll,
+        'administrative': administrative,
+        'marketing': marketing,
+        'utilities': utilities,
+        'repairs_maintenance': repairs_maintenance,
+        'contract_services': contract_services,
+        'make_ready': make_ready,
+        'turnover': turnover,
+        'property_taxes': property_taxes,
+        'insurance': insurance,
+        'management_fees': management_fees,
+        'other_operating_expenses': other_operating_expenses,
+        'total_operating_expenses': total_operating_expenses
     }
     
+    # Also add total_operating_expenses to top level for NOI Analyzer
+    data['operating_expenses_total'] = total_operating_expenses
+    
+    return data
+
+def _validate_reserves_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate and format reserves fields
+    
+    Args:
+        data: Raw data
+        
+    Returns:
+        Validated and formatted data
+    """
+    # Extract reserves from nested structure
+    reserves = data.get('reserves', {})
+    if not isinstance(reserves, dict):
+        reserves = {}
+    
+    # Validate standard reserve categories
+    replacement_reserves = _validate_numeric(reserves.get('replacement_reserves'))
+    capital_expenditures = _validate_numeric(reserves.get('capital_expenditures'))
+    
     # Validate other reserves
-    if 'other_reserves' in reserves_data and isinstance(reserves_data['other_reserves'], list):
-        for item in reserves_data['other_reserves']:
+    other_reserves = []
+    if 'other_reserves' in reserves and isinstance(reserves['other_reserves'], list):
+        for item in reserves['other_reserves']:
             if isinstance(item, dict) and 'name' in item and 'amount' in item:
                 validated_item = {
                     'name': str(item['name']),
                     'amount': _validate_numeric(item['amount'])
                 }
-                validated_reserves['other_reserves'].append(validated_item)
-                
-    # Calculate total if not provided or validate the provided value
+                other_reserves.append(validated_item)
+    
+    # Validate total reserves
+    total_reserves = _validate_numeric(reserves.get('total_reserves'))
+    
+    # Calculate total if not provided
     calculated_total = None
-    if validated_reserves['replacement_reserves'] is not None:
-        calculated_total = validated_reserves['replacement_reserves']
-        
-    if validated_reserves['capital_expenditures'] is not None:
+    if replacement_reserves is not None:
+        calculated_total = replacement_reserves
+    
+    if capital_expenditures is not None:
         if calculated_total is None:
-            calculated_total = validated_reserves['capital_expenditures']
+            calculated_total = capital_expenditures
         else:
-            calculated_total += validated_reserves['capital_expenditures']
-            
+            calculated_total += capital_expenditures
+    
     # Add other reserves to the total
-    for item in validated_reserves['other_reserves']:
+    for item in other_reserves:
         if item['amount'] is not None:
             if calculated_total is None:
                 calculated_total = item['amount']
             else:
                 calculated_total += item['amount']
-                
+    
     if calculated_total is not None:
-        if validated_reserves['total_reserves'] is None:
-            validated_reserves['total_reserves'] = calculated_total
-        else:
-            # Check if the provided total is close to the calculated total
-            if not _is_close(validated_reserves['total_reserves'], calculated_total, 0.05):
-                logger.warning(f"Provided reserves total ({validated_reserves['total_reserves']}) differs from calculated total ({calculated_total})")
-                # Use the calculated value as it's more reliable
-                validated_reserves['total_reserves'] = calculated_total
-                
-    return validated_reserves
+        if total_reserves is None:
+            total_reserves = calculated_total
+        elif not _is_close(total_reserves, calculated_total, 0.05):
+            logger.warning(f"Provided reserves total ({total_reserves}) differs from calculated total ({calculated_total})")
+            total_reserves = calculated_total
+    
+    # Update data with validated values
+    data['reserves'] = {
+        'replacement_reserves': replacement_reserves,
+        'capital_expenditures': capital_expenditures,
+        'other_reserves': other_reserves,
+        'total_reserves': total_reserves
+    }
+    
+    return data
+
+def _perform_validation_checks(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Perform additional validation checks
+    
+    Args:
+        data: Data to validate
+        
+    Returns:
+        Validated data
+    """
+    # 1. Non-negative Values Check
+    for field in ['gross_potential_rent', 'vacancy_loss', 'concessions', 'bad_debt', 'operating_expenses_total', 'net_operating_income']:
+        value = data.get(field)
+        if value is not None and value < 0:
+            logger.warning(f"Negative value found for {field}: {value}. Setting to 0.")
+            data[field] = 0.0
+    
+    # 2. EGI Sanity Check
+    gpr = data.get('gross_potential_rent', 0) or 0
+    vacancy_loss = data.get('vacancy_loss', 0) or 0
+    concessions = data.get('concessions', 0) or 0
+    bad_debt = data.get('bad_debt', 0) or 0
+    other_income_total = data.get('other_income', {}).get('total', 0) or 0
+    
+    calculated_egi = gpr - (vacancy_loss + concessions + bad_debt) + other_income_total
+    
+    if calculated_egi < 0:
+        logger.warning(f"Calculated EGI is negative: {calculated_egi}. Adjusting vacancy/concessions/bad_debt.")
+        # Reset problematic values to 0
+        data['vacancy_loss'] = 0.0
+        data['concessions'] = 0.0
+        data['bad_debt'] = 0.0
+        # Recalculate EGI
+        data['effective_gross_income'] = gpr + other_income_total
+    
+    # 3. NOI Consistency Check
+    egi = data.get('effective_gross_income', 0) or 0
+    opex = data.get('operating_expenses_total', 0) or 0
+    noi = data.get('net_operating_income', 0) or 0
+    
+    calculated_noi = egi - opex
+    
+    if noi is not None and calculated_noi is not None:
+        if not _is_close(noi, calculated_noi, 0.01):
+            logger.warning(f"NOI consistency check failed: provided NOI ({noi}) differs from calculated NOI ({calculated_noi})")
+            data['net_operating_income'] = calculated_noi
+    
+    # Set fallback values for non-required fields
+    if data.get('concessions') is None:
+        data['concessions'] = 0.0
+    
+    if data.get('bad_debt') is None:
+        data['bad_debt'] = 0.0
+    
+    return data
+
+def _validate_period(period: Optional[str]) -> Optional[str]:
+    """
+    Validate and format period string to YYYY-MM format
+    
+    Args:
+        period: Period string
+        
+    Returns:
+        Validated period string
+    """
+    if not period:
+        return None
+    
+    # Try to extract YYYY-MM format
+    import re
+    
+    # Check if already in YYYY-MM format
+    if re.match(r'^\d{4}-\d{2}$', period):
+        return period
+    
+    # Try to extract year and month from various formats
+    year_month_match = re.search(r'(\d{4})[-/\s]*(\d{1,2})', period)
+    if year_month_match:
+        year = year_month_match.group(1)
+        month = year_month_match.group(2).zfill(2)  # Ensure month is 2 digits
+        return f"{year}-{month}"
+    
+    # Try to extract from month name formats (e.g., "January 2025")
+    month_names = {
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+        'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
+    }
+    
+    month_year_match = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s,.-]+(\d{4})', 
+                                period.lower())
+    if month_year_match:
+        month_abbr = month_year_match.group(1)
+        year = month_year_match.group(2)
+        return f"{year}-{month_names[month_abbr]}"
+    
+    # If we can't parse it, return as is
+    logger.warning(f"Could not parse period '{period}' into YYYY-MM format")
+    return period
 
 def _validate_noi(noi: Optional[Union[float, int, str]], egi: Optional[Union[float, int, str]], opex: Optional[Union[float, int, str]]) -> Optional[float]:
     """
