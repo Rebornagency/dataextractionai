@@ -244,6 +244,14 @@ class DocumentClassifier:
         if year_match:
             return f"Year {year_match.group(1)}"
 
+        # 4. Special case for prior year documents - if we can't find a specific period
+        # but we know it's a prior year document, extract the year from the content
+        if "prior year" in text.lower() or "previous year" in text.lower():
+            # Look for any 4-digit year in the text
+            year_only_match = re.search(r'\b(20\d{2})\b', text)
+            if year_only_match:
+                return f"Year {year_only_match.group(1)}"
+
         # If no pattern matched, return None
         return None
 
