@@ -221,22 +221,45 @@ def format_for_noi_analyzer(result: Dict[str, Any]) -> Dict[str, Any]:
     concessions = data.get('concessions', 0.0) or 0.0
     bad_debt = data.get('bad_debt', 0.0) or 0.0
     
-    # Get operating expenses total
-    operating_expenses = data.get('operating_expenses_total')
+    # Get operating expenses - handle both nested and flat structures
+    operating_expenses = None
+    if 'operating_expenses' in data and isinstance(data['operating_expenses'], dict):
+        operating_expenses = data['operating_expenses'].get('total_operating_expenses')
+    if operating_expenses is None:
+        operating_expenses = data.get('operating_expenses_total')
     
     # Get NOI
     noi = data.get('net_operating_income')
     
-    # Format result for NOI Analyzer
+    # Get other income - handle both nested and flat structures
+    other_income = 0.0
+    if 'other_income' in data:
+        if isinstance(data['other_income'], dict):
+            other_income = data['other_income'].get('total', 0.0) or 0.0
+        else:
+            other_income = data.get('other_income', 0.0) or 0.0
+    
+    # Get EGI - handle both nested and flat structures
+    egi = data.get('effective_gross_income')
+    if egi is None:
+        # Calculate EGI if not provided
+        egi = (gross_potential_rent or 0.0) - (vacancy_loss or 0.0) - (concessions or 0.0) - (bad_debt or 0.0) + (other_income or 0.0)
+    
+    # Format result for NOI Analyzer with financials object
     noi_analyzer_result = {
         "property_id": property_id,
         "period": period,
-        "gross_potential_rent": gross_potential_rent,
-        "vacancy_loss": vacancy_loss,
-        "concessions": concessions,
-        "bad_debt": bad_debt,
-        "operating_expenses": operating_expenses,
-        "noi": noi,
+        "financials": {
+            "gross_potential_rent": gross_potential_rent,
+            "vacancy_loss": vacancy_loss,
+            "concessions": concessions,
+            "bad_debt": bad_debt,
+            "other_income": other_income,
+            "total_revenue": egi,  # Use EGI as total revenue
+            "total_expenses": operating_expenses,
+            "net_operating_income": noi,
+            "effective_gross_income": egi
+        },
         "source_documents": {
             "filename": result.get('metadata', {}).get('filename')
         }
@@ -257,16 +280,26 @@ def validate_required_fields(data: Dict[str, Any]) -> List[str]:
     required_fields = [
         'property_id',
         'period',
-        'gross_potential_rent',
-        'vacancy_loss',
-        'operating_expenses',
-        'noi'
+        'financials'
     ]
     
     missing_fields = []
     for field in required_fields:
         if field not in data or data[field] is None:
             missing_fields.append(field)
+    
+    # Also check required fields in financials
+    if 'financials' in data and data['financials'] is not None:
+        financials_required_fields = [
+            'gross_potential_rent',
+            'vacancy_loss',
+            'total_expenses',
+            'net_operating_income'
+        ]
+        
+        for field in financials_required_fields:
+            if field not in data['financials'] or data['financials'][field] is None:
+                missing_fields.append(f"financials.{field}")
     
     return missing_fields
 
