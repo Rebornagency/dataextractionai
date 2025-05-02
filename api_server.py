@@ -24,11 +24,14 @@ import chardet
 import pandas as pd
 import pdfplumber # type: ignore
 from typing import Dict, Any, List, Tuple, Optional, Union
-from fastapi import FastAPI, File, UploadFile, Form, Header, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, Form, Header, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import datetime
 from openai import OpenAI, RateLimitError, APIError, APITimeoutError
+from pydantic import BaseModel, Field, validator
+from config.settings import get_settings, API_TITLE, API_DESCRIPTION, API_VERSION
+from src.utils.helpers import get_api_key, validate_required_fields, validate_data, determine_document_type
 
 # Configure logging
 logging.basicConfig(
@@ -39,9 +42,9 @@ logger = logging.getLogger('api_server')
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Data Extraction AI API",
-    description="API for extracting financial data from various document types",
-    version="2.0.0"
+    title=API_TITLE,
+    description=API_DESCRIPTION,
+    version=API_VERSION
 )
 
 # Add CORS middleware
@@ -203,463 +206,202 @@ class FilePreprocessor:
         return "\n".join(rows)
 
 #################################################
-# Document Classifier Class
-#################################################
-class DocumentClassifier:
-    """
-    Class for classifying financial documents
-    """
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key
-        self.logger = logging.getLogger('document_classifier')
-    
-    def classify(self, preprocessed_data: Dict[str, Any], known_document_type: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Classify document and extract period
-        
-        Args:
-            preprocessed_data: Preprocessed data from FilePreprocessor
-            known_document_type: Optional known document type
-            
-        Returns:
-            Dictionary with document type and period
-        """
-        # Extract text and filename
-        text = preprocessed_data.get('text', '')
-        filename = preprocessed_data.get('filename', '')
-        
-        # If document type is provided, use it
-        if known_document_type:
-            document_type = known_document_type
-            method = "user_provided"
-        else:
-            # Try to determine from filename
-            document_type = self._determine_type_from_filename(filename)
-            if document_type:
-                method = "filename"
-            else:
-                # Try to determine from content
-                document_type = self._determine_type_from_content(text)
-                method = "content"
-        
-        # Extract period from filename or content
-        period = self._extract_period_from_name(filename)
-        if not period:
-            period = self._extract_period_from_content(text)
-        
-        return {
-            'document_type': document_type or "financial_statement",
-            'period': period,
-            'method': method
-        }
-    
-    def _determine_type_from_filename(self, filename: str) -> Optional[str]:
-        """Determine document type from filename"""
-        if not filename:
-            return None
-            
-        filename_lower = filename.lower()
-        
-        # Check for budget indicators
-        if 'budget' in filename_lower:
-            return 'budget'
-        
-        # Check for actual/current indicators
-        if any(term in filename_lower for term in ['actual', 'current']):
-            return 'current_month_actuals'
-        
-        # Check for prior/previous indicators
-        if any(term in filename_lower for term in ['prior', 'previous']):
-            if 'year' in filename_lower:
-                return 'prior_year_actuals'
-            else:
-                return 'prior_month_actuals'
-        
-        return None
-    
-    def _determine_type_from_content(self, text: str) -> str:
-        """Determine document type from content"""
-        text_lower = text.lower()
-        
-        # Check for budget indicators
-        if any(term in text_lower for term in ['budget', 'projected', 'forecast']):
-            return 'budget'
-        
-        # Check for actual indicators
-        if any(term in text_lower for term in ['actual', 'ytd', 'year to date']):
-            return 'current_month_actuals'
-        
-        # Default to financial statement
-        return 'financial_statement'
-    
-    def _extract_period_from_name(self, name: str) -> Optional[str]:
-        """Extract period from document name"""
-        if not name:
-            return None
-            
-        name_part = name.lower().replace('_', ' ').replace('-', ' ')
-        
-        # Define month patterns
-        months_full = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
-        months_abbr = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-        months_pattern = '|'.join(months_full + [f"{m}[a-z]*" for m in months_abbr])
-        
-        # Define year pattern
-        year_pattern = r'(20\d{2})'
-        
-        # Try to match Month Year pattern
-        month_year_match = re.search(rf'({months_pattern})\s+{year_pattern}', name_part, re.IGNORECASE)
-        if month_year_match:
-            return f"{self._standardize_month(month_year_match.group(1), months_full, months_abbr)} {month_year_match.group(2)}"
-        
-        # Try to match Year Month pattern
-        month_year_match2 = re.search(rf'{year_pattern}\s+({months_pattern})', name_part, re.IGNORECASE)
-        if month_year_match2:
-            return f"{self._standardize_month(month_year_match2.group(2), months_full, months_abbr)} {month_year_match2.group(1)}"
-        
-        # Try to match Quarter pattern
-        quarter_match = re.search(rf'(Q[1-4])\s*{year_pattern}', name_part, re.IGNORECASE)
-        if quarter_match:
-            return f"{quarter_match.group(1)} {quarter_match.group(2)}"
-        
-        # Try to match just year
-        year_match = re.search(year_pattern, name_part)
-        if year_match:
-            return year_match.group(1)
-        
-        return None
-    
-    def _extract_period_from_content(self, text: str) -> Optional[str]:
-        """Extract period from document content"""
-        if not text:
-            return None
-            
-        text_lower = text.lower()
-        
-        # Define month patterns
-        months_full = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
-        months_abbr = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-        months_pattern = '|'.join(months_full + [f"{m}[a-z]*" for m in months_abbr])
-        
-        # Define year pattern
-        year_pattern = r'(20\d{2})'
-        
-        # Try to match Month Year pattern
-        month_year_match = re.search(rf'({months_pattern})\s+{year_pattern}', text_lower, re.IGNORECASE)
-        if month_year_match:
-            return f"{self._standardize_month(month_year_match.group(1), months_full, months_abbr)} {month_year_match.group(2)}"
-        
-        # Try to match Year Month pattern
-        month_year_match2 = re.search(rf'{year_pattern}\s+({months_pattern})', text_lower, re.IGNORECASE)
-        if month_year_match2:
-            return f"{self._standardize_month(month_year_match2.group(2), months_full, months_abbr)} {month_year_match2.group(1)}"
-        
-        # Try to match just year
-        year_match = re.search(year_pattern, text_lower)
-        if year_match:
-            return year_match.group(1)
-        
-        return None
-    
-    def _standardize_month(self, month_str: str, months_full: List[str], months_abbr: List[str]) -> str:
-        """Standardize month name"""
-        month_str = month_str.lower()
-        
-        # Check full month names
-        for i, month in enumerate(months_full):
-            if month_str == month or month_str.startswith(month):
-                return months_full[i].capitalize()
-        
-        # Check abbreviated month names
-        for i, month in enumerate(months_abbr):
-            if month_str == month or month_str.startswith(month):
-                return months_full[i].capitalize()
-        
-        return month_str.capitalize()
-
-#################################################
 # GPT Data Extractor Class
 #################################################
 class GPTDataExtractor:
     """
-    Class for extracting data using GPT
+    Enhanced GPT data extractor with improved error handling and fallbacks
     """
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
-        self.logger = logging.getLogger('gpt_data_extractor')
-    
+        self.client = OpenAI(api_key=api_key) if api_key else OpenAI()
+        
     def extract_data(self, preprocessed_data: Dict[str, Any], document_type: str, period: Optional[str] = None) -> Dict[str, Any]:
         """
-        Extract data from preprocessed data using GPT
+        Extract data from preprocessed document using GPT with fallbacks
         
         Args:
-            preprocessed_data: Preprocessed data from FilePreprocessor
+            preprocessed_data: Dictionary with 'text' and 'tables' keys
             document_type: Type of document
-            period: Period of the document
+            period: Optional period information
             
         Returns:
-            Extracted data
+            Dictionary with extracted data
         """
-        # Extract text and tables
-        text = preprocessed_data.get('text', '')
-        tables = preprocessed_data.get('tables', [])
+        logger.info(f"Extracting data from {document_type} document")
         
-        # Combine text and tables
-        combined_text = text
-        if tables:
-            combined_text += "\n\n--- TABLES ---\n\n" + "\n\n".join(tables)
+        # Get text from preprocessed data
+        if not preprocessed_data or 'text' not in preprocessed_data:
+            logger.error("No text data in preprocessed data")
+            return {"error": "No text data in preprocessed data"}
+            
+        text = preprocessed_data['text']
         
-        # Truncate if too long
-        if len(combined_text) > 15000:
-            self.logger.warning(f"Text too long ({len(combined_text)} chars), truncating to 15000 chars")
-            combined_text = combined_text[:15000]
+        # Add tables if available
+        if 'tables' in preprocessed_data and preprocessed_data['tables']:
+            text += "\n\nTABLES:\n" + "\n\n".join(preprocessed_data['tables'])
+            
+        # Try GPT extraction with retries
+        max_retries = 3
+        retry_count = 0
+        last_error = None
         
-        # Extract data using GPT
-        try:
-            extraction_result = self._extract_with_gpt(combined_text, document_type, period)
-            return extraction_result
-        except Exception as e:
-            self.logger.error(f"Error extracting data with GPT: {str(e)}")
-            return {'error': f"Error extracting data: {str(e)}"}
-    
+        while retry_count < max_retries:
+            try:
+                result = self._extract_with_gpt(text, document_type, period)
+                if result and 'error' not in result:
+                    return result
+                    
+                # If GPT extraction failed but returned a partial result, try to repair it
+                if 'partial_data' in result:
+                    logger.warning("Got partial data, attempting repair")
+                    repaired_result = self._repair_partial_data(result['partial_data'], document_type)
+                    if repaired_result:
+                        return repaired_result
+                        
+                logger.error(f"GPT extraction failed: {result.get('error', 'Unknown error')}")
+                last_error = result.get('error', 'Unknown error')
+                
+            except RateLimitError:
+                logger.warning(f"Rate limit exceeded (attempt {retry_count + 1}/{max_retries}), waiting 10s")
+                time.sleep(10)
+                
+            except APITimeoutError:
+                logger.warning(f"API timeout (attempt {retry_count + 1}/{max_retries}), waiting 5s")
+                time.sleep(5)
+                
+            except APIError as e:
+                logger.error(f"OpenAI API error: {str(e)}")
+                last_error = f"OpenAI API error: {str(e)}"
+                break
+                
+            except Exception as e:
+                logger.error(f"Unexpected error: {str(e)}")
+                last_error = f"Unexpected error: {str(e)}"
+                break
+                
+            retry_count += 1
+            
+        # If all GPT attempts failed, try rule-based extraction as fallback
+        logger.warning("All GPT extraction attempts failed, trying rule-based fallback")
+        fallback_result = self._rule_based_extraction(text, document_type, period)
+        if fallback_result:
+            fallback_result['extraction_method'] = 'rule_based_fallback'
+            return fallback_result
+            
+        # If everything failed, return error
+        return {"error": f"Data extraction failed: {last_error}"}
+        
     def _extract_with_gpt(self, text: str, document_type: str, period: Optional[str] = None) -> Dict[str, Any]:
         """
-        Extract data using GPT
+        Extract data with GPT model
         
         Args:
-            text: Text to extract from
-            document_type: Type of document
-            period: Period of the document
+            text: Document text
+            document_type: Document type
+            period: Optional period
             
         Returns:
-            Extracted data
+            Dictionary with extracted data
         """
         # Create prompt
         prompt = self._create_extraction_prompt(text, document_type, period)
         
         try:
-            # Initialize OpenAI client
-            client = OpenAI(api_key=self.api_key)
-            
-            # Call OpenAI API
-            response = client.chat.completions.create(
-                model="gpt-4",
+            # Call GPT API
+            response = self.client.chat.completions.create(
+                model="gpt-4",  # Use GPT-4 for better extraction quality
+                temperature=0.1,  # Low temperature for consistent results
                 messages=[
-                    {"role": "system", "content": "You are a financial data extraction assistant. Extract the requested financial data from the provided document."},
+                    {"role": "system", "content": "You are a financial data extraction expert. Extract structured data from financial documents accurately."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.0,
-                max_tokens=2000
+                timeout=60  # Set timeout to 60 seconds
             )
             
-            # Parse response
-            response_text = response.choices[0].message.content
+            # Process response
+            result_text = response.choices[0].message.content
             
-            # Extract JSON from response
-            json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                # Try to find JSON without markdown
-                json_match = re.search(r'({.*})', response_text, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(1)
-                else:
-                    json_str = response_text
-            
-            # Parse JSON
+            # Try to parse JSON from the response
             try:
-                result = json.loads(json_str)
+                # Find JSON object in response
+                json_start = result_text.find('{')
+                json_end = result_text.rfind('}') + 1
                 
-                # Add period if provided
-                if period:
-                    result['period'] = period
-                
-                return result
+                if json_start >= 0 and json_end > json_start:
+                    json_str = result_text[json_start:json_end]
+                    result = json.loads(json_str)
+                    result['extraction_method'] = 'gpt'
+                    return result
+                else:
+                    # If no JSON found, try to parse it as a formatted string
+                    result = self._parse_formatted_string(result_text)
+                    if result:
+                        result['extraction_method'] = 'gpt_formatted'
+                        return result
+                    
+                    return {"error": "Could not parse GPT response as JSON", "partial_data": result_text}
+                    
             except json.JSONDecodeError as e:
-                self.logger.error(f"Error parsing JSON from GPT response: {str(e)}")
-                return {'error': f"Error parsing JSON from GPT response: {str(e)}"}
+                logger.error(f"Failed to parse GPT response as JSON: {str(e)}")
+                return {"error": f"Failed to parse GPT response: {str(e)}", "partial_data": result_text}
                 
-        except RateLimitError:
-            self.logger.error("OpenAI API rate limit exceeded")
-            return {'error': "OpenAI API rate limit exceeded. Please try again later."}
-        except APIError as e:
-            self.logger.error(f"OpenAI API error: {str(e)}")
-            return {'error': f"OpenAI API error: {str(e)}"}
-        except APITimeoutError:
-            self.logger.error("OpenAI API timeout")
-            return {'error': "OpenAI API timeout. Please try again later."}
         except Exception as e:
-            self.logger.error(f"Error calling OpenAI API: {str(e)}")
-            return {'error': f"Error calling OpenAI API: {str(e)}"}
-    
-    def _create_extraction_prompt(self, text: str, document_type: str, period: Optional[str] = None) -> str:
-        """
-        Create extraction prompt for GPT
-        
-        Args:
-            text: Text to extract from
-            document_type: Type of document
-            period: Period of the document
-            
-        Returns:
-            Extraction prompt
-        """
-        prompt = f"""
-        Extract financial data from the following {document_type} document.
-        
-        {f"Period: {period}" if period else ""}
-        
-        Document content:
-        ```
-        {text}
-        ```
-        
-        Extract the following financial data in JSON format:
-        
-        1. Gross Potential Rent (GPR)
-        2. Vacancy Loss
-        3. Concessions (if available)
-        4. Bad Debt (if available)
-        5. Other Income, including:
-           - Application Fees (if available)
-           - Any additional income items with their names and amounts
-           - Total Other Income
-        6. Effective Gross Income (EGI)
-        7. Operating Expenses, including:
-           - Payroll
-           - Administrative
-           - Marketing
-           - Utilities
-           - Repairs and Maintenance
-           - Contract Services
-           - Make Ready
-           - Turnover
-           - Property Taxes
-           - Insurance
-           - Management Fees
-           - Any other operating expenses with their names and amounts
-           - Total Operating Expenses
-        8. Net Operating Income (NOI)
-        
-        Format the response as a JSON object with the following structure:
-        ```json
-        {{
-            "gross_potential_rent": <value>,
-            "vacancy_loss": <value>,
-            "concessions": <value>,
-            "bad_debt": <value>,
-            "other_income": {{
-                "application_fees": <value>,
-                "additional_items": [
-                    {{ "name": "<item_name>", "amount": <value> }},
-                    ...
-                ],
-                "total": <value>
-            }},
-            "effective_gross_income": <value>,
-            "operating_expenses": {{
-                "payroll": <value>,
-                "administrative": <value>,
-                "marketing": <value>,
-                "utilities": <value>,
-                "repairs_maintenance": <value>,
-                "contract_services": <value>,
-                "make_ready": <value>,
-                "turnover": <value>,
-                "property_taxes": <value>,
-                "insurance": <value>,
-                "management_fees": <value>,
-                "other_operating_expenses": [
-                    {{ "name": "<item_name>", "amount": <value> }},
-                    ...
-                ],
-                "total_operating_expenses": <value>
-            }},
-            "net_operating_income": <value>
-        }}
-        ```
-        
-        Use null for missing values. All amounts should be numeric values without currency symbols or commas.
-        """
-        
-        return prompt
+            logger.error(f"GPT API call failed: {str(e)}")
+            return {"error": f"GPT API call failed: {str(e)}"}
 
-# Format extraction result for NOI Analyzer
-def format_for_noi_analyzer(result: Dict[str, Any]) -> Dict[str, Any]:
+def standardize_period(period: Optional[str]) -> Optional[str]:
     """
-    Format extraction result for NOI Analyzer
+    Standardize period format to YYYY-MM
     
     Args:
-        result: Extraction result
+        period: Period in various formats
         
     Returns:
-        Formatted result for NOI Analyzer
+        Standardized period in YYYY-MM format
     """
-    # Check if result is valid
-    if not result or not isinstance(result, dict) or 'error' in result:
-        return result
+    if not period:
+        return None
+        
+    import re
     
-    # Extract data from result
-    data = result
-    if not data:
-        return {"error": "No data extracted"}
+    # Try to match various date formats
+    # YYYY-MM or YYYY-MM-DD
+    match = re.match(r'(\d{4})-(\d{1,2})(?:-\d{1,2})?', period)
+    if match:
+        year, month = match.groups()
+        return f"{year}-{int(month):02d}"
     
-    # Extract property_id and period
-    property_id = data.get('property_id')
-    period = data.get('period')
+    # MM-YYYY or MM/YYYY
+    match = re.match(r'(\d{1,2})[-/](\d{4})', period)
+    if match:
+        month, year = match.groups()
+        return f"{year}-{int(month):02d}"
     
-    # Extract financial data
-    gross_potential_rent = data.get('gross_potential_rent')
-    vacancy_loss = data.get('vacancy_loss')
-    concessions = data.get('concessions', 0.0) or 0.0
-    bad_debt = data.get('bad_debt', 0.0) or 0.0
+    # Month name YYYY (January 2023)
+    month_names = [
+        "january", "february", "march", "april", "may", "june",
+        "july", "august", "september", "october", "november", "december"
+    ]
     
-    # Get operating expenses - handle both nested and flat structures
-    operating_expenses = None
-    if 'operating_expenses' in data and isinstance(data['operating_expenses'], dict):
-        operating_expenses = data['operating_expenses'].get('total_operating_expenses')
-    if operating_expenses is None:
-        operating_expenses = data.get('operating_expenses_total')
+    for i, month in enumerate(month_names):
+        # Full month name
+        pattern = f"(?:{month})\s+(\d{{4}})"
+        match = re.search(pattern, period.lower())
+        if match:
+            year = match.group(1)
+            return f"{year}-{i+1:02d}"
+        
+        # Abbreviated month name
+        abbr = month[:3]
+        pattern = f"(?:{abbr})[a-z]*\s+(\d{{4}})"
+        match = re.search(pattern, period.lower())
+        if match:
+            year = match.group(1)
+            return f"{year}-{i+1:02d}"
     
-    # Get NOI
-    noi = data.get('net_operating_income')
-    
-    # Get other income - handle both nested and flat structures
-    other_income = 0.0
-    if 'other_income' in data:
-        if isinstance(data['other_income'], dict):
-            other_income = data['other_income'].get('total', 0.0) or 0.0
-        else:
-            other_income = data.get('other_income', 0.0) or 0.0
-    
-    # Get EGI - handle both nested and flat structures
-    egi = data.get('effective_gross_income')
-    if egi is None:
-        # Calculate EGI if not provided
-        egi = (gross_potential_rent or 0.0) - (vacancy_loss or 0.0) - (concessions or 0.0) - (bad_debt or 0.0) + (other_income or 0.0)
-    
-    # Format result for NOI Analyzer with financials object
-    noi_analyzer_result = {
-        "property_id": property_id,
-        "period": period,
-        "financials": {
-            "gross_potential_rent": gross_potential_rent,
-            "vacancy_loss": vacancy_loss,
-            "concessions": concessions,
-            "bad_debt": bad_debt,
-            "other_income": other_income,
-            "total_revenue": egi,  # Use EGI as total revenue
-            "total_expenses": operating_expenses,
-            "net_operating_income": noi,
-            "effective_gross_income": egi
-        },
-        "source_documents": {
-            "filename": result.get('metadata', {}).get('filename')
-        }
-    }
-    
-    return noi_analyzer_result
+    # Could not standardize
+    return period
 
 def validate_and_format_data(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -739,7 +481,7 @@ async def health_check():
     """Health check endpoint for Render"""
     return {
         "status": "healthy",
-        "version": "2.0.0",
+        "version": API_VERSION,
         "timestamp": datetime.datetime.now().isoformat()
     }
 
@@ -777,7 +519,6 @@ async def extract_data(
         try:
             # Create instances of the necessary classes
             preprocessor = FilePreprocessor()
-            classifier = DocumentClassifier(api_key=api_key)
             extractor = GPTDataExtractor(api_key=api_key)
             
             # Step 1: Preprocess the file
@@ -787,28 +528,21 @@ async def extract_data(
                 filename=file.filename
             )
             
-            # Step 2: Classify document and extract period
-            classification_result = classifier.classify(
-                preprocessed_data, 
-                known_document_type=document_type
-            )
-            
-            # Step 3: Extract data using GPT
+            # Step 2: Extract data using GPT
             extraction_result = extractor.extract_data(
                 preprocessed_data,
-                document_type=classification_result['document_type'],
-                period=classification_result['period']
+                document_type=document_type,
             )
             
-            # Step 4: Validate and format the extracted data
+            # Step 3: Validate and format the extracted data
             final_result = validate_and_format_data(extraction_result)
             
             # Add metadata to the result
             final_result['metadata'] = {
                 'filename': file.filename,
-                'document_type': classification_result['document_type'],
-                'period': classification_result['period'],
-                'classification_method': classification_result.get('method', 'unknown')
+                'document_type': document_type,
+                'period': extraction_result.get('period'),
+                'classification_method': 'user_provided' if document_type else 'unknown'
             }
             
             return final_result
@@ -817,95 +551,117 @@ async def extract_data(
             logger.error(f"Error processing file: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
+class ExtractionRequest(BaseModel):
+    document_type: Optional[str] = None
+    property_id: Optional[str] = None
+    period: Optional[str] = None
+    
+    @validator('document_type')
+    def validate_document_type(cls, v):
+        if v is not None:
+            valid_types = ['profit_loss', 'balance_sheet', 'rent_roll', 'operating_statement']
+            if v.lower() not in [t.lower() for t in valid_types]:
+                raise ValueError(f"Invalid document type: {v}. Must be one of: {', '.join(valid_types)}")
+        return v
+    
+    @validator('period')
+    def validate_period(cls, v):
+        if v is not None:
+            # Basic period format validation (YYYY-MM or YYYY-MM-DD)
+            import re
+            if not re.match(r'^\d{4}-\d{2}(-\d{2})?$', v):
+                raise ValueError("Period must be in YYYY-MM or YYYY-MM-DD format")
+        return v
+
 @app.post("/api/v2/extraction/financials")
 async def extract_financials_v2(
     file: UploadFile = File(...),
-    property_id: Optional[str] = Form(None),
-    period: Optional[str] = Form(None),
-    api_key: Optional[str] = Header(None)
+    request: ExtractionRequest = Depends()
 ):
     """
-    Extract financial data from uploaded file (V2 endpoint for NOI Analyzer)
-    
-    Args:
-        file: Uploaded file
-        property_id: Property ID (optional)
-        period: Period (optional)
-        api_key: OpenAI API key (optional)
-        
-    Returns:
-        Extracted financial data in flattened format for NOI Analyzer
+    Enhanced endpoint for financial data extraction
     """
-    logger.info(f"Received V2 extraction request for file: {file.filename}, property_id: {property_id}, period: {period}")
+    # Validate file size
+    file_size = 0
+    chunk_size = 1024 * 1024  # 1MB chunks
+    content = b''
     
-    # Create temp directory for file processing
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Save uploaded file to temp directory
-        temp_file_path = os.path.join(temp_dir, file.filename)
-        with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        content += chunk
+        file_size += len(chunk)
         
-        try:
-            # Create instances of the necessary classes
-            preprocessor = FilePreprocessor()
-            classifier = DocumentClassifier(api_key=api_key)
-            extractor = GPTDataExtractor(api_key=api_key)
-            
-            # Step 1: Preprocess the file
-            preprocessed_data = preprocessor.preprocess(
-                temp_file_path, 
-                content_type=file.content_type, 
-                filename=file.filename
-            )
-            
-            # Step 2: Classify document and extract period if not provided
-            classification_result = classifier.classify(
-                preprocessed_data, 
-                known_document_type="financial_statement"
-            )
-            
-            # Use provided period if available, otherwise use classified period
-            effective_period = period or classification_result['period']
-            
-            # Step 3: Extract data using GPT
-            extraction_result = extractor.extract_data(
-                preprocessed_data,
-                document_type=classification_result['document_type'],
-                period=effective_period
-            )
-            
-            # If property_id was provided, add it to the extraction result
-            if property_id:
-                extraction_result['property_id'] = property_id
-            
-            # Step 4: Validate and format the extracted data
-            final_result = validate_and_format_data(extraction_result)
-            
-            # Add metadata to the result
-            final_result['metadata'] = {
-                'filename': file.filename,
-                'document_type': classification_result['document_type'],
-                'period': effective_period,
-                'classification_method': classification_result.get('method', 'unknown')
-            }
-            
-            # Format result for NOI Analyzer
-            noi_analyzer_result = format_for_noi_analyzer(final_result)
-            
-            # Validate required fields
-            missing_fields = validate_required_fields(noi_analyzer_result)
-            if missing_fields:
-                raise HTTPException(
-                    status_code=422,
-                    detail={"error": f"Missing fields: {', '.join(missing_fields)}"}
-                )
-            
-            return noi_analyzer_result
-            
-        except Exception as e:
-            logger.error(f"Error processing file: {str(e)}")
-            raise HTTPException(status_code=500, detail={"error": f"Error processing file: {str(e)}"})
+        # Check file size limit (10MB)
+        if file_size > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large (max 10MB)")
+    
+    # Reset file position
+    file.file = io.BytesIO(content)
+    
+    # Check file type
+    try:
+        file_type = magic.from_buffer(content[:1024], mime=True)
+        if not file_type.startswith(('application/pdf', 'application/vnd.ms-excel', 
+                                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                    'text/csv', 'text/plain')):
+            raise HTTPException(status_code=415, detail=f"Unsupported file type: {file_type}")
+    except Exception as e:
+        logger.error(f"Error checking file type: {str(e)}")
+    
+    # Process the extraction with enhanced error handling
+    try:
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(content)
+            temp_path = temp_file.name
+        
+        # Preprocess file
+        preprocessor = FilePreprocessor()
+        preprocessed_data = preprocessor.preprocess(
+            temp_path, 
+            content_type=file.content_type, 
+            filename=file.filename
+        )
+        
+        # Extract data
+        extractor = GPTDataExtractor(api_key=None)
+        extraction_result = extractor.extract_data(
+            preprocessed_data, 
+            document_type=request.document_type, 
+            period=request.period
+        )
+        
+        # Add metadata
+        extraction_result['metadata'] = {
+            'filename': file.filename,
+            'document_type': request.document_type,
+            'period': extraction_result.get('period'),
+            'property_id': request.property_id,
+            'extraction_time': datetime.datetime.now().isoformat()
+        }
+        
+        # Format for NOI Analyzer
+        formatted_result = format_for_noi_comparison(extraction_result)
+        
+        # Remove temporary file
+        os.unlink(temp_path)
+        
+        return formatted_result
+        
+    except Exception as e:
+        logger.error(f"Extraction error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
 if __name__ == "__main__":
-    # Run the API server
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
+    # Get settings
+    settings = get_settings()
+    
+    # Start server
+    uvicorn.run(
+        "api_server:app",
+        host=settings['api']['host'],
+        port=settings['api']['port'],
+        reload=settings['api']['debug']
+    )
