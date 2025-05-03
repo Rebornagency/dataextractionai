@@ -31,7 +31,7 @@ import datetime
 from openai import OpenAI, RateLimitError, APIError, APITimeoutError
 from pydantic import BaseModel, Field, validator
 from config.settings import get_settings, API_TITLE, API_DESCRIPTION, API_VERSION
-from src.utils.helpers import get_api_key, validate_required_fields, validate_data, determine_document_type
+from src.utils.helpers import get_api_key, validate_required_fields, validate_data, determine_document_type, format_currency, format_percent
 
 # Configure logging
 logging.basicConfig(
