@@ -699,7 +699,14 @@ class ValidationFormatter:
         if not isinstance(other_income, dict):
             other_income = {}
         
+        # Validate standard other income categories
+        parking = self._validate_numeric(other_income.get('parking'))
+        laundry = self._validate_numeric(other_income.get('laundry'))
+        late_fees = self._validate_numeric(other_income.get('late_fees'))
+        pet_fees = self._validate_numeric(other_income.get('pet_fees'))
         application_fees = self._validate_numeric(other_income.get('application_fees'))
+        
+        # Validate additional items
         additional_items = []
         if 'additional_items' in other_income and isinstance(other_income['additional_items'], list):
             for item in other_income['additional_items']:
@@ -713,15 +720,17 @@ class ValidationFormatter:
         other_income_total = self._validate_numeric(other_income.get('total'))
         
         # Calculate other_income total if not provided
-        calculated_other_income = application_fees
+        calculated_other_income = 0
+        for value in [parking, laundry, late_fees, pet_fees, application_fees]:
+            if value is not None:
+                calculated_other_income += value
+                
+        # Add additional items to the total
         for item in additional_items:
             if item['amount'] is not None:
-                if calculated_other_income is None:
-                    calculated_other_income = item['amount']
-                else:
-                    calculated_other_income += item['amount']
+                calculated_other_income += item['amount']
         
-        if calculated_other_income is not None:
+        if calculated_other_income > 0:
             if other_income_total is None:
                 other_income_total = calculated_other_income
             elif not self._is_close(other_income_total, calculated_other_income, 0.05):
@@ -755,11 +764,22 @@ class ValidationFormatter:
         data['bad_debt'] = bad_debt
         data['recoveries'] = recoveries
         data['other_income'] = {
+            'parking': parking,
+            'laundry': laundry,
+            'late_fees': late_fees,
+            'pet_fees': pet_fees,
             'application_fees': application_fees,
             'additional_items': additional_items,
             'total': other_income_total
         }
         data['effective_gross_income'] = effective_gross_income
+        
+        # Add individual other income components to top level for NOI Analyzer
+        data['parking'] = parking
+        data['laundry'] = laundry
+        data['late_fees'] = late_fees
+        data['pet_fees'] = pet_fees
+        data['application_fees'] = application_fees
         
         return data
     
@@ -849,6 +869,13 @@ class ValidationFormatter:
         
         # Also add total_operating_expenses to top level for NOI Analyzer
         data['operating_expenses_total'] = total_operating_expenses
+        
+        # Add individual operating expense components to top level for NOI Analyzer
+        data['property_taxes'] = property_taxes
+        data['insurance'] = insurance
+        data['repairs_and_maintenance'] = repairs_maintenance  # Note the normalized name
+        data['utilities'] = utilities
+        data['management_fees'] = management_fees
         
         return data
     
@@ -1221,21 +1248,93 @@ def format_for_noi_analyzer(result: Dict[str, Any]) -> Dict[str, Any]:
     
     # Get operating expenses - handle both nested and flat structures
     operating_expenses = None
+    operating_expenses_components = {}
+    
     if 'operating_expenses' in data and isinstance(data['operating_expenses'], dict):
-        operating_expenses = data['operating_expenses'].get('total_operating_expenses')
+        opex_data = data['operating_expenses']
+        operating_expenses = opex_data.get('total_operating_expenses')
+        
+        # Extract OpEx components
+        component_mapping = {
+            "property_taxes": ["property_taxes", "taxes"],
+            "insurance": ["insurance"],
+            "repairs_and_maintenance": ["repairs_maintenance", "repairs", "maintenance"],
+            "utilities": ["utilities"],
+            "management_fees": ["management_fees", "management"]
+        }
+        
+        # Try to extract each component using various possible field names
+        for normalized_key, possible_fields in component_mapping.items():
+            for field in possible_fields:
+                if field in opex_data and opex_data[field] is not None:
+                    operating_expenses_components[normalized_key] = opex_data[field]
+                    break
+    
+    # Fall back to flat structure if needed
     if operating_expenses is None:
         operating_expenses = data.get('operating_expenses_total')
     
-    # Get NOI
-    noi = data.get('net_operating_income')
+    # Get individual OpEx components from top level if not already found
+    top_level_components = [
+        ("property_taxes", "property_taxes"),
+        ("insurance", "insurance"),
+        ("repairs_and_maintenance", "repairs_maintenance"),
+        ("utilities", "utilities"),
+        ("management_fees", "management_fees")
+    ]
+    
+    for component_key, data_key in top_level_components:
+        if component_key not in operating_expenses_components and data_key in data:
+            operating_expenses_components[component_key] = data.get(data_key)
     
     # Get other income - handle both nested and flat structures
     other_income = 0.0
+    other_income_components = {}
+    
     if 'other_income' in data:
         if isinstance(data['other_income'], dict):
-            other_income = data['other_income'].get('total', 0.0) or 0.0
+            other_income_data = data['other_income']
+            other_income = other_income_data.get('total', 0.0) or 0.0
+            
+            # Extract Other Income components
+            component_mapping = {
+                "parking": ["parking"],
+                "laundry": ["laundry"],
+                "late_fees": ["late_fees", "late fees"],
+                "pet_fees": ["pet_fees", "pet fees", "pet rent"],
+                "application_fees": ["application_fees", "application fees"]
+            }
+            
+            # Try to extract each component using various possible field names
+            for normalized_key, possible_fields in component_mapping.items():
+                for field in possible_fields:
+                    if field in other_income_data and other_income_data[field] is not None:
+                        other_income_components[normalized_key] = other_income_data[field]
+                        break
         else:
             other_income = data.get('other_income', 0.0) or 0.0
+    
+    # Get individual Other Income components from top level if not already found
+    top_level_components = [
+        ("parking", "parking"),
+        ("laundry", "laundry"),
+        ("late_fees", "late_fees"),
+        ("pet_fees", "pet_fees"),
+        ("application_fees", "application_fees")
+    ]
+    
+    for component_key, data_key in top_level_components:
+        if component_key not in other_income_components and data_key in data:
+            other_income_components[component_key] = data.get(data_key)
+    
+    # Default missing categories to zero if we have a nonzero total
+    if other_income and other_income > 0:
+        for component_key in ["parking", "laundry", "late_fees", "pet_fees", "application_fees"]:
+            if component_key not in other_income_components:
+                other_income_components[component_key] = 0.0
+    
+    # Get NOI
+    noi = data.get('net_operating_income')
     
     # Get EGI - handle both nested and flat structures
     egi = data.get('effective_gross_income')
@@ -1256,7 +1355,19 @@ def format_for_noi_analyzer(result: Dict[str, Any]) -> Dict[str, Any]:
             "total_revenue": egi,  # Use EGI as total revenue
             "total_expenses": operating_expenses,
             "net_operating_income": noi,
-            "effective_gross_income": egi
+            "effective_gross_income": egi,
+            # Add OpEx component breakdowns
+            "property_taxes": operating_expenses_components.get("property_taxes", 0.0),
+            "insurance": operating_expenses_components.get("insurance", 0.0),
+            "repairs_and_maintenance": operating_expenses_components.get("repairs_and_maintenance", 0.0),
+            "utilities": operating_expenses_components.get("utilities", 0.0),
+            "management_fees": operating_expenses_components.get("management_fees", 0.0),
+            # Add Other Income component breakdowns
+            "parking": other_income_components.get("parking", 0.0),
+            "laundry": other_income_components.get("laundry", 0.0),
+            "late_fees": other_income_components.get("late_fees", 0.0),
+            "pet_fees": other_income_components.get("pet_fees", 0.0),
+            "application_fees": other_income_components.get("application_fees", 0.0)
         },
         "source_documents": {
             "filename": result.get('metadata', {}).get('filename')

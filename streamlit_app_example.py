@@ -3,6 +3,7 @@ import json
 from typing import Dict, Any, List
 import logging
 import traceback
+import pandas as pd
 
 # Configure logging
 logging.basicConfig(
@@ -71,7 +72,81 @@ def display_extraction_results(results: Dict[str, Any]):
             st.write(f"- Operating Expenses: ${result.get('operating_expenses', {}).get('total_operating_expenses', 0):,.2f}")
             st.write(f"- Reserves: ${result.get('reserves', {}).get('total_reserves', 0):,.2f}")
             st.write(f"- Net Operating Income: ${result.get('net_operating_income', 0):,.2f}")
+        
+        # Add Other Income Breakdown section
+        with st.expander("Other Income Breakdown"):
+            # Get financials data, either from nested structure or top level
+            financials = result.get('financials', result)
             
+            # Get other income data, either from nested structure or top level
+            other_income_data = financials.get('other_income', {})
+            if not isinstance(other_income_data, dict):
+                other_income_data = {}
+            
+            # Create breakdown dictionary
+            income_breakdown = {
+                "Parking": financials.get("parking", other_income_data.get("parking", 0)),
+                "Laundry": financials.get("laundry", other_income_data.get("laundry", 0)),
+                "Late Fees": financials.get("late_fees", other_income_data.get("late_fees", 0)),
+                "Pet Fees": financials.get("pet_fees", other_income_data.get("pet_fees", 0)),
+                "Application Fees": financials.get("application_fees", other_income_data.get("application_fees", 0))
+            }
+            
+            # Convert to DataFrame
+            income_df = pd.DataFrame.from_dict(income_breakdown, orient="index", columns=["Value"])
+            
+            # Format as currency
+            st.dataframe(income_df.style.format("${:,.2f}"))
+            
+            # Add a pie chart visualization
+            if any(income_breakdown.values()):
+                st.write("### Other Income Distribution")
+                fig = {
+                    "data": [{
+                        "values": list(income_breakdown.values()),
+                        "labels": list(income_breakdown.keys()),
+                        "type": "pie",
+                        "hole": 0.4
+                    }],
+                    "layout": {"height": 300}
+                }
+                st.plotly_chart(fig)
+        
+        # Add OpEx Breakdown section
+        with st.expander("OpEx Breakdown"):
+            # Build a DataFrame of each expense line and its value
+            # Get financials data, either from nested structure or top level
+            financials = result.get('financials', result)
+            
+            # Create breakdown dictionary
+            breakdown = {
+                "Property Taxes": financials.get("property_taxes", 0),
+                "Insurance": financials.get("insurance", 0),
+                "Repairs & Maintenance": financials.get("repairs_and_maintenance", 0),
+                "Utilities": financials.get("utilities", 0),
+                "Management Fees": financials.get("management_fees", 0)
+            }
+            
+            # Convert to DataFrame
+            df = pd.DataFrame.from_dict(breakdown, orient="index", columns=["Value"])
+            
+            # Format as currency
+            st.dataframe(df.style.format("${:,.2f}"))
+            
+            # Add a pie chart visualization
+            if any(breakdown.values()):
+                st.write("### OpEx Distribution")
+                fig = {
+                    "data": [{
+                        "values": list(breakdown.values()),
+                        "labels": list(breakdown.keys()),
+                        "type": "pie",
+                        "hole": 0.4
+                    }],
+                    "layout": {"height": 300}
+                }
+                st.plotly_chart(fig)
+        
         # Display metadata
         st.write("### Metadata")
         st.json(result.get("metadata", {}))
