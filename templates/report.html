@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>NOI Analysis Report</title>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 40px;
+            color: #333;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .metric-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 10px 0;
+        }
+        .metric-label {
+            font-size: 14px;
+            color: #6c757d;
+        }
+        .metric-value {
+            font-size: 24px;
+            color: #212529;
+            margin: 8px 0;
+        }
+        .chart-container {
+            margin: 20px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+        th {
+            background-color: #f8f9fa;
+        }
+        .insights-section {
+            margin: 30px 0;
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            border-left: 4px solid #0d6efd;
+        }
+        .insight-item {
+            margin: 10px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+        .insight-item:before {
+            content: "•";
+            position: absolute;
+            left: 0;
+            color: #0d6efd;
+        }
+        .breakdown-section {
+            margin: 30px 0;
+            border-radius: 8px;
+            padding: 20px;
+            background: #f0f4f8;
+        }
+        .breakdown-title {
+            color: #0d6efd;
+            border-bottom: 1px solid #c8d6e5;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .pie-container {
+            width: 100%;
+            height: 300px;
+            position: relative;
+        }
+        .color-box {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 5px;
+            border-radius: 2px;
+        }
+        .legend-item {
+            margin: 5px 0;
+        }
+        .pie-colors {
+            background: linear-gradient(45deg, #4e73df, #36b9cc, #1cc88a, #f6c23e, #e74a3b);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>NOI Analysis Report</h1>
+        <h2>{{ property_name }}</h2>
+        <p>Generated on {{ datetime.now().strftime('%B %d, %Y') }}</p>
+    </div>
+
+    <!-- Executive Summary Section -->
+    {% if executive_summary %}
+    <div class="insights-section">
+        <h2>Executive Summary</h2>
+        <p>{{ executive_summary }}</p>
+    </div>
+    {% endif %}
+
+    <div class="metrics-section">
+        <h2>Key Performance Indicators</h2>
+        <div class="metric-card">
+            <div class="metric-label">Effective Gross Income</div>
+            <div class="metric-value">${{ '{:,.2f}'.format(kpis.egi) }}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Operating Expense Ratio</div>
+            <div class="metric-value">{{ '{:.1%}'.format(kpis.operating_expense_ratio) }}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">NOI Margin</div>
+            <div class="metric-value">{{ '{:.1%}'.format(kpis.noi_margin) }}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Gross Rent Multiplier</div>
+            <div class="metric-value">{{ '{:.2f}'.format(kpis.gross_rent_multiplier) }}x</div>
+        </div>
+    </div>
+
+    <div class="performance-section">
+        <h2>Performance Analysis</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th>Current</th>
+                    <th>Prior</th>
+                    <th>Variance</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in performance_data %}
+                <tr>
+                    <td>{{ row.metric }}</td>
+                    <td>${{ '{:,.2f}'.format(row.current) }}</td>
+                    <td>${{ '{:,.2f}'.format(row.prior) }}</td>
+                    <td>{{ '{:+.1%}'.format(row.variance) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- OpEx Breakdown Section -->
+    {% if opex_breakdown_available %}
+    <div class="breakdown-section">
+        <h2 class="breakdown-title">Operating Expense Breakdown</h2>
+        <p>Detailed analysis of operating expense components:</p>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>Expense Category</th>
+                    <th>Current</th>
+                    <th>Prior</th>
+                    <th>Variance</th>
+                    <th>% of Total OpEx</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in opex_breakdown_data %}
+                <tr>
+                    <td>{{ item.category }}</td>
+                    <td>${{ '{:,.2f}'.format(item.current) }}</td>
+                    <td>${{ '{:,.2f}'.format(item.prior) }}</td>
+                    <td>{{ '{:+.1%}'.format(item.variance) }}</td>
+                    <td>{{ '{:.1f}%'.format(item.percentage) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        <div class="insights-item" style="margin-top: 20px;">
+            <p><strong>Key Insights:</strong></p>
+            <ul>
+                {% set highest_component = opex_breakdown_data|sort(attribute='current')|reverse|first %}
+                {% if highest_component %}
+                <li>{{ highest_component.category }} represents the largest expense component at {{ '{:.1f}%'.format(highest_component.percentage) }} of total operating expenses.</li>
+                {% endif %}
+                
+                {% set highest_variance = opex_breakdown_data|sort(attribute='variance')|reverse|first %}
+                {% if highest_variance and highest_variance.variance > 0.05 %}
+                <li>{{ highest_variance.category }} shows the largest variance at {{ '{:+.1%}'.format(highest_variance.variance) }} compared to prior period.</li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Other Income Breakdown Section -->
+    {% if income_breakdown_available %}
+    <div class="breakdown-section">
+        <h2 class="breakdown-title">Other Income Breakdown</h2>
+        <p>Detailed analysis of other income components:</p>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>Income Category</th>
+                    <th>Current</th>
+                    <th>Prior</th>
+                    <th>Variance</th>
+                    <th>% of Total Income</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in income_breakdown_data %}
+                <tr>
+                    <td>{{ item.category }}</td>
+                    <td>${{ '{:,.2f}'.format(item.current) }}</td>
+                    <td>${{ '{:,.2f}'.format(item.prior) }}</td>
+                    <td>{{ '{:+.1%}'.format(item.variance) }}</td>
+                    <td>{{ '{:.1f}%'.format(item.percentage) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        <div class="insights-item" style="margin-top: 20px;">
+            <p><strong>Key Insights:</strong></p>
+            <ul>
+                {% set highest_component = income_breakdown_data|sort(attribute='current')|reverse|first %}
+                {% if highest_component %}
+                <li>{{ highest_component.category }} represents the largest income component at {{ '{:.1f}%'.format(highest_component.percentage) }} of total other income.</li>
+                {% endif %}
+                
+                {% set highest_variance = income_breakdown_data|sort(attribute='variance')|reverse|first %}
+                {% if highest_variance and highest_variance.variance > 0.05 %}
+                <li>{{ highest_variance.category }} shows the largest variance at {{ '{:+.1%}'.format(highest_variance.variance) }} compared to prior period.</li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Key Performance Insights Section -->
+    {% if performance_insights %}
+    <div class="insights-section">
+        <h2>Key Performance Insights</h2>
+        {% for insight in performance_insights %}
+        <div class="insight-item">
+            {{ insight }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Recommendations Section -->
+    {% if recommendations %}
+    <div class="insights-section">
+        <h2>Recommendations</h2>
+        {% for recommendation in recommendations %}
+        <div class="insight-item">
+            {{ recommendation }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</body>
+</html>
