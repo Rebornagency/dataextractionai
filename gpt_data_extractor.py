@@ -4,6 +4,9 @@ from typing import Dict, Any, List, Optional, Union
 from openai import OpenAI
 import json
 import re
+from ai_extraction.prompts import PROMPT_TEMPLATES, DEFAULT_PROMPT
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import openai
 
 # Configure logging
 logging.basicConfig(
@@ -69,10 +72,62 @@ class GPTDataExtractor:
             truncated_text = text
 
         try:
-            # Create prompt for GPT
+            # Create prompt for GPT based on document type
             prompt = self._create_extraction_prompt(truncated_text, document_type, period)
             
-            # Call GPT API
+            # Call GPT API with retry logic
+            extraction_result = self._call_gpt_with_retry(prompt)
+            
+            # Extract raw lines from the document for auditing purposes
+            raw_lines = self._extract_raw_lines(truncated_text, extraction_result)
+            
+            # Add raw lines and metadata to the result
+            extraction_result = {
+                "financials": extraction_result,
+                "raw_lines": raw_lines,
+                "metadata": {
+                    'document_type': document_type,
+                    'period': period,
+                    'extraction_method': 'gpt-4'
+                }
+            }
+            
+            # Perform basic validation
+            extraction_result = self._validate_extraction(extraction_result)
+            
+            return extraction_result
+            
+        except Exception as e:
+            logger.error(f"Error in GPT data extraction: {str(e)}", exc_info=True)
+            return {
+                'error': f"Data extraction failed: {str(e)}",
+                'metadata': {
+                    'document_type': document_type,
+                    'period': period
+                }
+            }
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError)),
+        reraise=True
+    )
+    def _call_gpt_with_retry(self, prompt: str) -> Dict[str, Any]:
+        """
+        Call GPT API with retry logic for transient errors
+
+        Args:
+            prompt: The prompt to send to GPT
+
+        Returns:
+            Extracted data as dict
+        
+        Raises:
+            Exception: If all retry attempts fail
+        """
+        try:
+            logger.info("Calling GPT API...")
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -85,26 +140,27 @@ class GPTDataExtractor:
             
             # Parse response
             response_text = response.choices[0].message.content
-            extraction_result = json.loads(response_text)
+            logger.info("GPT API call successful")
+            return json.loads(response_text)
             
-            # Add metadata
-            extraction_result['metadata'] = {
-                'document_type': document_type,
-                'period': period,
-                'extraction_method': 'gpt-4'
-            }
-            
-            return extraction_result
-            
+        except openai.RateLimitError as e:
+            logger.warning(f"Rate limit exceeded: {str(e)}. Retrying...")
+            raise
+        except openai.APITimeoutError as e:
+            logger.warning(f"API timeout: {str(e)}. Retrying...")
+            raise
+        except openai.APIConnectionError as e:
+            logger.warning(f"API connection error: {str(e)}. Retrying...")
+            raise
+        except openai.APIError as e:
+            logger.error(f"OpenAI API error: {str(e)}")
+            raise
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse GPT response as JSON: {str(e)}")
+            raise ValueError(f"Failed to parse GPT response: {str(e)}")
         except Exception as e:
-            logger.error(f"Error in GPT data extraction: {str(e)}")
-            return {
-                'error': f"Data extraction failed: {str(e)}",
-                'metadata': {
-                    'document_type': document_type,
-                    'period': period
-                }
-            }
+            logger.error(f"Unexpected error in GPT API call: {str(e)}", exc_info=True)
+            raise
 
     def _extract_text_from_input(self, text_or_data: Union[str, Dict[str, Any]]) -> str:
         """
@@ -162,8 +218,8 @@ class GPTDataExtractor:
 
     def _create_extraction_prompt(self, text: str, document_type: str, period: Optional[str] = None) -> str:
         """
-        Create prompt for GPT data extraction
-        Enhanced to extract detailed income components and application fees
+        Create prompt for GPT data extraction based on document type
+        Uses templates from the PROMPT_TEMPLATES dictionary
 
         Args:
             text: Preprocessed text from the document
@@ -173,111 +229,127 @@ class GPTDataExtractor:
         Returns:
             Prompt for GPT
         """
-        # Base prompt
-        prompt = f"""You are a financial data extraction assistant. Extract the following financial data from this {document_type}"""
+        # Normalize document type to match template keys (lowercase, remove spaces)
+        normalized_doc_type = document_type.lower().strip()
+        for key in ["actual", "budget", "pro_forma", "t12", "rent_roll", "operating_statement"]:
+            if key in normalized_doc_type:
+                template_key = key
+                break
+        else:
+            # If no matching template found, use default
+            template_key = None
+        
+        # Get template based on document type
+        if template_key and template_key in PROMPT_TEMPLATES:
+            prompt_template = PROMPT_TEMPLATES[template_key]
+            logger.info(f"Using {template_key} prompt template for document type: {document_type}")
+        else:
+            prompt_template = DEFAULT_PROMPT
+            logger.info(f"Using default prompt template for document type: {document_type}")
         
         # Add period if available
+        full_prompt = prompt_template
         if period:
-            prompt += f" for the period {period}"
+            full_prompt = f"For the period {period}: {full_prompt}"
             
         # Add document text
-        prompt += f":\n\n{text}\n\n"
+        full_prompt += f"\n\nDocument content:\n{text}"
         
-        # Add extraction instructions
-        prompt += """Extract the following financial data points:
+        return full_prompt
 
-1. Income:
-   - Gross Potential Rent (GPR)
-   - Vacancy Loss
-   - Concessions
-   - Bad Debt/Delinquency
-   - Recoveries
-   - Other Income (itemized if available)
-   - Application Fees (specifically look for this under Other Income)
-   - Effective Gross Income (EGI) - calculate as GPR minus Vacancy/Concessions/Bad Debt plus Other Income
+    def _extract_raw_lines(self, text: str, extraction_result: Dict[str, Any]) -> List[str]:
+        """
+        Extract raw text lines from the document that likely contain the extracted values
+        This helps with auditing and debugging the extraction process
 
-2. Operating Expenses:
-   - Payroll
-   - Administrative
-   - Marketing
-   - Utilities
-   - Repairs & Maintenance
-   - Contract Services
-   - Make Ready
-   - Turnover
-   - Property Taxes
-   - Insurance
-   - Management Fees
-   - Other Operating Expenses (itemized if available)
-   - Total Operating Expenses
+        Args:
+            text: Document text
+            extraction_result: Extracted data
 
-3. Reserves:
-   - Replacement Reserves
-   - Capital Expenditures
-   - Other Reserves (itemized if available)
-   - Total Reserves
-
-4. Net Operating Income (NOI):
-   - Calculate as EGI minus Total Operating Expenses
-
-5. Property Information:
-   - Property ID (look for any unique identifier for the property)
-   - Period (in YYYY-MM format, extract from document date or header)
-
-For each data point:
-- Extract the exact amount from the document
-- Convert all amounts to numeric values (remove currency symbols, commas, etc.)
-- If a value is not found, set it to null
-- If a value is negative, represent it as a negative number
-- For itemized categories (like Other Income), include subcategories if available
-
-Respond in JSON format with the following structure:
-{
-  "gross_potential_rent": number or null,
-  "vacancy_loss": number or null,
-  "concessions": number or null,
-  "bad_debt": number or null,
-  "recoveries": number or null,
-  "other_income": {
-    "application_fees": number or null,
-    "additional_items": [
-      {"name": "item name", "amount": number}
-    ],
-    "total": number or null
-  },
-  "effective_gross_income": number or null,
-  "operating_expenses": {
-    "payroll": number or null,
-    "administrative": number or null,
-    "marketing": number or null,
-    "utilities": number or null,
-    "repairs_maintenance": number or null,
-    "contract_services": number or null,
-    "make_ready": number or null,
-    "turnover": number or null,
-    "property_taxes": number or null,
-    "insurance": number or null,
-    "management_fees": number or null,
-    "other_operating_expenses": [
-      {"name": "item name", "amount": number}
-    ],
-    "total_operating_expenses": number or null
-  },
-  "reserves": {
-    "replacement_reserves": number or null,
-    "capital_expenditures": number or null,
-    "other_reserves": [
-      {"name": "item name", "amount": number}
-    ],
-    "total_reserves": number or null
-  },
-  "net_operating_income": number or null,
-  "property_id": string or null,
-  "period": string in YYYY-MM format or null,
-  "confidence_score": number between 0 and 1
-}
-
-Ensure all calculations are mathematically correct. If you're uncertain about any value, provide your best estimate and adjust the confidence score accordingly.
-"""
+        Returns:
+            List of raw text lines relevant to the extraction
+        """
+        raw_lines = []
         
-        return prompt
+        # Find all dollar amounts and percentages in the text
+        amount_regex = r'\$\s*[\d,]+(\.\d+)?|\d+\s*%|[\d,]+\.\d+|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b'
+        
+        # Get values from the extraction result
+        extracted_values = []
+        
+        def extract_values(obj):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if isinstance(value, (int, float)) and value is not None:
+                        extracted_values.append(str(value))
+                    elif isinstance(value, (dict, list)):
+                        extract_values(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    extract_values(item)
+        
+        extract_values(extraction_result)
+        
+        # Convert values to strings without commas, dollar signs, etc. for matching
+        extracted_values = [str(value).strip().replace('$', '').replace(',', '').replace('%', '') 
+                           for value in extracted_values if value]
+        
+        # Split text into lines
+        lines = text.split('\n')
+        
+        # Check each line
+        for line in lines:
+            # If line contains a dollar amount or percentage
+            if re.search(amount_regex, line):
+                # Check if any of the extracted values are in the line
+                clean_line = line.replace('$', '').replace(',', '').replace('%', '')
+                for value in extracted_values:
+                    if value in clean_line:
+                        raw_lines.append(line.strip())
+                        break
+            
+            # Also add any line that looks like a financial header
+            financial_terms = ['rent', 'income', 'expense', 'operating', 'vacancy', 
+                              'gross', 'net', 'total', 'revenue', 'loss']
+            if any(term in line.lower() for term in financial_terms) and len(line.strip()) > 5:
+                raw_lines.append(line.strip())
+        
+        # Deduplicate and limit to a reasonable number
+        raw_lines = list(dict.fromkeys(raw_lines))
+        
+        return raw_lines[:50]  # Limit to 50 lines
+
+    def _validate_extraction(self, extraction_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Perform basic validation on the extracted data
+        Flag potential issues for review
+
+        Args:
+            extraction_result: Extracted data
+
+        Returns:
+            Validated data with validation flags
+        """
+        result = extraction_result.copy()
+        validation_issues = []
+        
+        financials = result.get("financials", {})
+        
+        # Check if NOI > GPR (invalid)
+        noi = financials.get("net_operating_income")
+        gpr = financials.get("gross_potential_rent")
+        
+        if noi is not None and gpr is not None and noi > gpr:
+            validation_issues.append("NOI cannot exceed GPR")
+        
+        # Check if vacancy loss > GPR (invalid)
+        vacancy = financials.get("vacancy_loss")
+        if vacancy is not None and gpr is not None and vacancy > gpr:
+            validation_issues.append("Vacancy loss cannot exceed GPR")
+        
+        # Add validation issues to result
+        if validation_issues:
+            result["validation_issues"] = validation_issues
+            logger.warning(f"Validation issues found: {validation_issues}")
+        
+        return result

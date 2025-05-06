@@ -32,6 +32,8 @@ from openai import OpenAI, RateLimitError, APIError, APITimeoutError
 from pydantic import BaseModel, Field, validator
 from config.settings import get_settings, API_TITLE, API_DESCRIPTION, API_VERSION
 from src.utils.helpers import get_api_key, validate_required_fields, validate_data, determine_document_type, format_currency, format_percent
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import requests
 
 # Configure logging
 logging.basicConfig(
@@ -653,6 +655,96 @@ async def extract_financials_v2(
     except Exception as e:
         logger.error(f"Extraction error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+
+def format_for_noi_comparison(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Format the extraction result for NOI comparison
+    
+    Args:
+        extraction_result: Raw extraction result with financials, raw_lines and validation
+        
+    Returns:
+        Formatted data for NOI comparison
+    """
+    # Create formatted result
+    formatted_result = {}
+    
+    # Extract financials from the new structure
+    financials = extraction_result.get("financials", {})
+    
+    # If there's an error in extraction, return it
+    if "error" in extraction_result:
+        return {"error": extraction_result["error"]}
+    
+    # Copy financial data to formatted result
+    for key, value in financials.items():
+        formatted_result[key] = value
+    
+    # Add metadata
+    formatted_result["metadata"] = extraction_result.get("metadata", {})
+    
+    # Add audit lines for traceability
+    formatted_result["audit_lines"] = extraction_result.get("raw_lines", [])
+    
+    # Add validation issues if present
+    if "validation_issues" in extraction_result:
+        formatted_result["validation_issues"] = extraction_result["validation_issues"]
+    
+    return formatted_result
+
+# Add this before extract_noi_data function
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((requests.exceptions.ConnectionError, 
+                                   requests.exceptions.Timeout,
+                                   requests.exceptions.HTTPError))
+)
+def post_with_retry(url, files, headers=None, timeout=30):
+    """
+    Make a POST request with retry logic for transient errors
+    
+    Args:
+        url: The API endpoint URL
+        files: Files to upload
+        headers: Optional request headers
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Response object
+        
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    logger.info(f"Sending POST request to {url}")
+    response = requests.post(url, files=files, headers=headers, timeout=timeout)
+    response.raise_for_status()  # Raise exception for 4XX/5XX status codes
+    return response
+
+def extract_noi_data(document_files, api_url=None, api_key=None):
+    """
+    Extract NOI data from documents using the external extraction API.
+    Enhanced with retry logic and improved error handling.
+    """
+    from api_integration import call_extraction_api
+    results = {}
+    
+    for doc_file in document_files:
+        try:
+            result, error = call_extraction_api(doc_file)
+            if error:
+                logger.error(f"Error extracting data from {doc_file.name}: {error}")
+                results[doc_file.name] = {"error": error}
+            else:
+                results[doc_file.name] = result
+        except Exception as e:
+            logger.error(f"Unexpected error during extraction for {doc_file.name}: {str(e)}", exc_info=True)
+            results[doc_file.name] = {
+                "error": f"Extraction failed: {str(e)}",
+                "status": "error"
+            }
+    
+    return results
 
 if __name__ == "__main__":
     # Get settings

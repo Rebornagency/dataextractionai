@@ -29,3 +29,5 @@ numpy>=1.24.0 # Used for NaN handling in pandas
 
 # Consider adding specific versions if you encounter compatibility issues
 # Example: fastapi==0.103.1
+
+tenacity>=8.2.0
