@@ -496,7 +496,7 @@ async def root():
 async def extract_data(
     file: UploadFile = File(...),
     document_type: Optional[str] = Form(None),
-    api_key: Optional[str] = Header(None)
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
 ):
     """
     Extract data from uploaded document (V1 endpoint)
@@ -504,12 +504,17 @@ async def extract_data(
     Args:
         file: Uploaded file
         document_type: Optional document type label
-        api_key: OpenAI API key (optional)
+        x_api_key: OpenAI API key (optional)
         
     Returns:
         Extracted and formatted data
     """
     logger.info(f"Received file: {file.filename}, Content-Type: {file.content_type}")
+    
+    # Enforce presence of X-API-Key (production requirement)
+    if x_api_key is None or x_api_key.strip() == "":
+        logger.warning("X-API-Key header missing on /extract request")
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
     
     # Create temp directory for file processing
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -521,7 +526,7 @@ async def extract_data(
         try:
             # Create instances of the necessary classes
             preprocessor = FilePreprocessor()
-            extractor = GPTDataExtractor(api_key=api_key)
+            extractor = GPTDataExtractor()
             
             # Step 1: Preprocess the file
             preprocessed_data = preprocessor.preprocess(
@@ -578,11 +583,17 @@ class ExtractionRequest(BaseModel):
 @app.post("/api/v2/extraction/financials")
 async def extract_financials_v2(
     file: UploadFile = File(...),
-    request: ExtractionRequest = Depends()
+    request: ExtractionRequest = Depends(),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
 ):
     """
     Enhanced endpoint for financial data extraction
     """
+    # Enforce presence of X-API-Key (production requirement)
+    if x_api_key is None or x_api_key.strip() == "":
+        logger.warning("X-API-Key header missing on /api/v2/extraction/financials request")
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    
     # Validate file size
     file_size = 0
     chunk_size = 1024 * 1024  # 1MB chunks
@@ -628,23 +639,23 @@ async def extract_financials_v2(
         )
         
         # Extract data
-        extractor = GPTDataExtractor(api_key=None)
+        extractor = GPTDataExtractor()
         extraction_result = extractor.extract_data(
             preprocessed_data, 
             document_type=request.document_type, 
             period=request.period
         )
         
-        # Add metadata
+        # Add metadata with correct period
         extraction_result['metadata'] = {
             'filename': file.filename,
             'document_type': request.document_type,
-            'period': extraction_result.get('period'),
+            'period': standardize_period(request.period),
             'property_id': request.property_id,
             'extraction_time': datetime.datetime.now().isoformat()
         }
         
-        # Format for NOI Analyzer
+        # Format for NOI Analyzer per frontend spec
         formatted_result = format_for_noi_comparison(extraction_result)
         
         # Remove temporary file
@@ -658,39 +669,71 @@ async def extract_financials_v2(
 
 def format_for_noi_comparison(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Format the extraction result for NOI comparison
-    
-    Args:
-        extraction_result: Raw extraction result with financials, raw_lines and validation
-        
-    Returns:
-        Formatted data for NOI comparison
+    Format the extraction result for NOI comparison according to the exact
+    JSON shape required by the NOI Analyzer frontend helper.
     """
-    # Create formatted result
-    formatted_result = {}
-    
-    # Extract financials from the new structure
-    financials = extraction_result.get("financials", {})
-    
-    # If there's an error in extraction, return it
+    # If the extractor signaled an error, return it directly
     if "error" in extraction_result:
         return {"error": extraction_result["error"]}
-    
-    # Copy financial data to formatted result
-    for key, value in financials.items():
-        formatted_result[key] = value
-    
-    # Add metadata
-    formatted_result["metadata"] = extraction_result.get("metadata", {})
-    
-    # Add audit lines for traceability
-    formatted_result["audit_lines"] = extraction_result.get("raw_lines", [])
-    
-    # Add validation issues if present
+
+    # Pull out metadata and raw fields
+    metadata = extraction_result.get("metadata", {})
+    raw = extraction_result.get("financials", extraction_result)
+
+    # Build the 'financials' block with exactly the requested keys
+    financials: Dict[str, Any] = {}
+    for field in [
+        "gross_potential_rent", "vacancy_loss", "concessions",
+        "bad_debt", "effective_gross_income", "net_operating_income"
+    ]:
+        financials[field] = raw.get(field)
+
+    # Operating Expenses (nested)
+    opex = raw.get("operating_expenses")
+    if isinstance(opex, dict):
+        ops = {"total_operating_expenses": opex.get("total_operating_expenses", opex.get("total"))}
+        for k in [
+            "payroll", "administrative", "marketing", "utilities",
+            "repairs_and_maintenance", "contract_services", "make_ready",
+            "turnover", "property_taxes", "insurance", "management_fees"
+        ]:
+            ops[k] = opex.get(k, 0)
+        financials["operating_expenses"] = ops
+    else:
+        financials["operating_expenses"] = {"total_operating_expenses": opex}
+
+    # Other Income (nested)
+    oi = raw.get("other_income")
+    if isinstance(oi, dict):
+        other = {"total": oi.get("total")}
+        for k in [
+            "application_fees", "parking", "laundry", "late_fees",
+            "pet_fees", "storage_fees", "amenity_fees",
+            "utility_reimbursements", "cleaning_fees",
+            "cancellation_fees", "miscellaneous"
+        ]:
+            other[k] = oi.get(k, 0)
+        other["additional_items"] = oi.get("additional_items", [])
+        financials["other_income"] = other
+    else:
+        financials["other_income"] = oi
+
+    # Assemble final payload exactly per spec
+    response: Dict[str, Any] = {
+        "property_id": metadata.get("property_id"),
+        "period": metadata.get("period"),
+        "financials": financials
+    }
+    if metadata:
+        response["metadata"] = metadata
     if "validation_issues" in extraction_result:
-        formatted_result["validation_issues"] = extraction_result["validation_issues"]
-    
-    return formatted_result
+        response["validation_issues"] = extraction_result["validation_issues"]
+    if "audit_lines" in extraction_result:
+        response["audit_lines"] = extraction_result["audit_lines"]
+    elif "raw_lines" in extraction_result:
+        # backward-compatibility path
+        response["audit_lines"] = extraction_result["raw_lines"]
+    return response
 
 # Add this before extract_noi_data function
 @retry(

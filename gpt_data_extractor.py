@@ -81,16 +81,14 @@ class GPTDataExtractor:
             # Extract raw lines from the document for auditing purposes
             raw_lines = self._extract_raw_lines(truncated_text, extraction_result)
             
-            # Add raw lines and metadata to the result
-            extraction_result = {
-                "financials": extraction_result,
-                "raw_lines": raw_lines,
-                "metadata": {
-                    'document_type': document_type,
-                    'period': period,
-                    'extraction_method': 'gpt-4'
-                }
-            }
+            # Attach audit lines and metadata without altering the core JSON structure
+            extraction_result["audit_lines"] = raw_lines
+            extraction_result.setdefault("metadata", {})
+            extraction_result["metadata"].update({
+                "document_type": document_type,
+                "period": period,
+                "extraction_method": "gpt-4",
+            })
             
             # Perform basic validation
             extraction_result = self._validate_extraction(extraction_result)
@@ -218,44 +216,99 @@ class GPTDataExtractor:
 
     def _create_extraction_prompt(self, text: str, document_type: str, period: Optional[str] = None) -> str:
         """
-        Create prompt for GPT data extraction based on document type
-        Uses templates from the PROMPT_TEMPLATES dictionary
+        Build a single, contract-compliant prompt string instructing the model to return
+        ONLY the JSON defined by the NOI Analyzer schema.
 
         Args:
-            text: Preprocessed text from the document
-            document_type: Type of document
-            period: Time period covered by the document (optional)
+            text: The (possibly pre-processed) document text. Will be truncated to first 5k chars.
+            document_type: Friendly name (e.g. "Actual Income Statement") coming from upstream.
+            period: Optional period (YYYY-MM) supplied by caller.
 
         Returns:
-            Prompt for GPT
+            A fully-rendered prompt ready to be sent to the OpenAI chat completion endpoint.
         """
-        # Normalize document type to match template keys (lowercase, remove spaces)
-        normalized_doc_type = document_type.lower().strip()
-        for key in ["actual", "budget", "pro_forma", "t12", "rent_roll", "operating_statement"]:
-            if key in normalized_doc_type:
-                template_key = key
-                break
-        else:
-            # If no matching template found, use default
-            template_key = None
-        
-        # Get template based on document type
-        if template_key and template_key in PROMPT_TEMPLATES:
-            prompt_template = PROMPT_TEMPLATES[template_key]
-            logger.info(f"Using {template_key} prompt template for document type: {document_type}")
-        else:
-            prompt_template = DEFAULT_PROMPT
-            logger.info(f"Using default prompt template for document type: {document_type}")
-        
-        # Add period if available
-        full_prompt = prompt_template
-        if period:
-            full_prompt = f"For the period {period}: {full_prompt}"
-            
-        # Add document text
-        full_prompt += f"\n\nDocument content:\n{text}"
-        
-        return full_prompt
+        # Truncate to keep token usage under control but still provide ample context
+        text_sample = text[:5000]
+
+        period_context = period if period else "Unknown"
+
+        # NOTE: The JSON schema must match 100 % the expectations of the downstream
+        # NOI Analyzer front-end.  Keep nesting and key order exactly.
+        schema_block = (
+            '{\n'
+            '  "property_id": "string|null",\n'
+            '  "period": "YYYY-MM",\n'
+            '  "financials": {\n'
+            '    "gross_potential_rent":           "number|null",\n'
+            '    "vacancy_loss":                   "number|null",\n'
+            '    "concessions":                    "number|null",\n'
+            '    "bad_debt":                       "number|null",\n'
+            '    "effective_gross_income":         "number|null",\n'
+            '    "other_income": {\n'
+            '      "total":                       "number|null",\n'
+            '      "application_fees":            "number|0",\n'
+            '      "parking":                     "number|0",\n'
+            '      "laundry":                     "number|0",\n'
+            '      "late_fees":                   "number|0",\n'
+            '      "pet_fees":                    "number|0",\n'
+            '      "storage_fees":                "number|0",\n'
+            '      "amenity_fees":                "number|0",\n'
+            '      "utility_reimbursements":      "number|0",\n'
+            '      "cleaning_fees":               "number|0",\n'
+            '      "cancellation_fees":           "number|0",\n'
+            '      "miscellaneous":               "number|0",\n'
+            '      "additional_items":            [ { "label": "string", "amount": "number" } ]\n'
+            '    },\n'
+            '    "operating_expenses": {\n'
+            '      "total_operating_expenses":     "number|null",\n'
+            '      "payroll":                     "number|0",\n'
+            '      "administrative":              "number|0",\n'
+            '      "marketing":                   "number|0",\n'
+            '      "utilities":                   "number|0",\n'
+            '      "repairs_and_maintenance":     "number|0",\n'
+            '      "contract_services":           "number|0",\n'
+            '      "make_ready":                  "number|0",\n'
+            '      "turnover":                    "number|0",\n'
+            '      "property_taxes":             "number|0",\n'
+            '      "insurance":                  "number|0",\n'
+            '      "management_fees":            "number|0"\n'
+            '    },\n'
+            '    "net_operating_income":           "number|null"\n'
+            '  },\n'
+            '  "metadata": {\n'
+            '    "filename":        "string",\n'
+            '    "document_type":   "string",\n'
+            '    "period":          "YYYY-MM",\n'
+            '    "extraction_time": "ISO-8601",\n'
+            '    "property_id":     "string|null"\n'
+            '  },\n'
+            '  "validation_issues": [ "string" ],\n'
+            '  "audit_lines":       [ "string" ]\n'
+            '}'
+        )
+
+        prompt = f"""
+You are NOI-GPT, a precision extraction engine for multifamily property financial statements.
+
+TASK
+1. Read the SOURCE TEXT and locate every field required by the JSON SCHEMA below.
+2. Think through the math and sanity-check subtotals internally (do not show your work).
+3. Respond with one and only one JSON object that strictly matches the schema. Use null when a value is missing. Strip currency symbols and thousands separators so every numeric field parses with float().
+4. Do NOT wrap the JSON in markdown.
+
+JSON SCHEMA
+{schema_block}
+
+CONTEXT
+• Document category: {document_type}
+• Period: {period_context}
+
+SOURCE TEXT (truncated to 5 000 chars)
+<<<
+{text_sample}
+>>>
+"""
+        return prompt
 
     def _extract_raw_lines(self, text: str, extraction_result: Dict[str, Any]) -> List[str]:
         """
